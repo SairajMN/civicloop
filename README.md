@@ -36,7 +36,7 @@ Requirements: Node.js 22+, AWS CLI authenticated with your AWS profile/SSO, and 
 2. Set `BEDROCK_MODEL_ID` to a direct model ID enabled for your project in that Region. If inference is unavailable, the app uses a clearly labeled factual template. Bedrock access is optional for deployment.
 3. Verify `SES_FROM_EMAIL` in SES. Set `DEMO_INBOX_EMAIL` to a verified test recipient first. Configure `AUTHORITY_EMAILS_JSON` only with current, confirmed authority contacts; you can route by city or exact landmark/area. Example: `AUTHORITY_EMAILS_JSON='{"Bengaluru":{"department":"BBMP","areas":{"Mahadevapura":{"department":"BBMP Mahadevapura zone","email":"verified-contact@example.org"}}}}'`.
 4. Run `node scripts/deploy.mjs`. If you use a named AWS profile, run `AWS_PROFILE=sai node scripts/deploy.mjs` (replace `sai` with your profile name). This creates or updates the AWS stack, writes the Cognito domain and public IDs to `.env` and `config.js`, and removes any Google identity provider from the Cognito user pool.
-5. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk and send emails.
+5. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk; reporters can send only their own reports after reviewing the recipient and email.
 
 The frontend receives only the API URL, Cognito domain, and public app client ID. The Cognito app client has no client secret. Email addresses are deliberately left unverified, so Cognito email-based password recovery cannot be used until users verify their address. `.env` is ignored by Git.
 
@@ -50,6 +50,6 @@ Two distinct signed-in neighbors confirming a fix move the report to **Community
 
 ## AWS resources
 
-`template.yaml` defines the deployable stack. `backend/handler.mjs` implements the API and bounded Bedrock agent tools. `backend/auth-triggers.mjs` confirms email/password sign-ups without verifying the submitted email. `scripts/deploy.mjs` is the deployment entry point. No AWS resources have been created by committing this project.
+`template.yaml` defines the deployable stack. `backend/handler.mjs` implements the API and bounded Bedrock agent tools. `backend/auth-triggers.mjs` confirms email/password sign-ups without verifying the submitted email. `scripts/deploy.mjs` is the deployment entry point; deploying creates or updates AWS resources and can incur usage charges.
 
 The browser's nearby notification feature is a reminder while the app is open and location is refreshed; it is not a background push service. Authority email and social sharing remain user-triggered. Add a scheduled notification provider or official social API only when the required sender/authority accounts and credentials are available.
