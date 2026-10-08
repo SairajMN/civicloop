@@ -3,6 +3,10 @@ Transform: AWS::Serverless-2016-10-31
 Description: Civicloop mobile web app, shared civic reports, and bounded Bedrock triage agent.
 
 Parameters:
+  SiteOrigin:
+    Type: String
+    Default: https://civicloop-coral.vercel.app
+    Description: HTTPS origin hosting the Civicloop frontend.
   BedrockModelId:
     Type: String
     Default: ''
@@ -34,7 +38,7 @@ Globals:
         SES_FROM_EMAIL: !Ref SesFromEmail
         DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
         AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
-        APP_ORIGIN: !Sub 'https://${WebDistribution.DomainName}'
+        APP_ORIGIN: !Ref SiteOrigin
 
 Conditions:
   HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
@@ -73,9 +77,9 @@ Resources:
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
       SupportedIdentityProviders: [COGNITO]
-      CallbackURLs: [http://localhost:8080/, !Sub 'https://${WebDistribution.DomainName}/']
-      LogoutURLs: [http://localhost:8080/, !Sub 'https://${WebDistribution.DomainName}/']
-      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      CallbackURLs: [http://localhost:8080/, !Sub '${SiteOrigin}/']
+      LogoutURLs: [http://localhost:8080/, !Sub '${SiteOrigin}/']
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH]
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 7
@@ -147,7 +151,7 @@ Resources:
         CorsRules:
           - AllowedHeaders: ['*']
             AllowedMethods: [GET, PUT]
-            AllowedOrigins: ['http://localhost:8080', !Sub 'https://${WebDistribution.DomainName}']
+            AllowedOrigins: ['http://localhost:8080', !Ref SiteOrigin]
             ExposedHeaders: [ETag]
             MaxAge: 300
       LifecycleConfiguration:
@@ -157,85 +161,11 @@ Resources:
             ExpirationInDays: 365
             Prefix: reports/
 
-  WebBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-
-  WebOriginAccessControl:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub '${AWS::StackName}-web-oac'
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
-
-  WebDistribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        DefaultRootObject: index.html
-        HttpVersion: http2and3
-        Origins:
-          - Id: CivicloopWeb
-            DomainName: !GetAtt WebBucket.RegionalDomainName
-            OriginAccessControlId: !Ref WebOriginAccessControl
-            S3OriginConfig:
-              OriginAccessIdentity: ''
-        DefaultCacheBehavior:
-          TargetOriginId: CivicloopWeb
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: [GET, HEAD, OPTIONS]
-          CachedMethods: [GET, HEAD, OPTIONS]
-          Compress: true
-          ForwardedValues:
-            QueryString: false
-            Cookies:
-              Forward: none
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
-        CustomErrorResponses:
-          - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 0
-          - ErrorCode: 404
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 0
-
-  WebBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref WebBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: AllowCloudFrontReadOnly
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: s3:GetObject
-            Resource: !Sub '${WebBucket.Arn}/*'
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}'
-
   ReportsApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       CorsConfiguration:
-        AllowOrigins: [!Sub 'https://${WebDistribution.DomainName}', http://localhost:8080]
+        AllowOrigins: [!Ref SiteOrigin, http://localhost:8080]
         AllowHeaders: [authorization, content-type]
         AllowMethods: [GET, POST, OPTIONS]
         MaxAge: 600
@@ -382,14 +312,9 @@ Resources:
       RetentionInDays: 30
 
 Outputs:
-  WebUrl:
-    Description: Civicloop mobile web app.
-    Value: !Sub 'https://${WebDistribution.DomainName}'
-  WebBucketName:
-    Description: Private S3 bucket served through CloudFront.
-    Value: !Ref WebBucket
-  WebDistributionId:
-    Value: !Ref WebDistribution
+  SiteOrigin:
+    Description: Civicloop frontend hosted on Vercel.
+    Value: !Ref SiteOrigin
   ApiUrl:
     Description: HTTP API endpoint.
     Value: !Sub 'https://${ReportsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'

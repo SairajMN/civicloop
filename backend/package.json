@@ -3,15 +3,14 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-cloudformation": "^3.900.0",
-    "@aws-sdk/client-cloudfront": "^3.900.0",
-    "esbuild": "^0.25.0",
     "@aws-sdk/client-bedrock-runtime": "^3.900.0",
+    "@aws-sdk/client-cloudformation": "^3.900.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.900.0",
     "@aws-sdk/client-dynamodb": "^3.900.0",
     "@aws-sdk/client-s3": "^3.900.0",
     "@aws-sdk/client-sesv2": "^3.900.0",
     "@aws-sdk/lib-dynamodb": "^3.900.0",
-    "@aws-sdk/s3-request-presigner": "^3.900.0"
+    "@aws-sdk/s3-request-presigner": "^3.900.0",
+    "esbuild": "^0.25.0"
   }
 }

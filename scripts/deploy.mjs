@@ -4,8 +4,6 @@ import { createRequire } from 'node:module';
 
 const backendRequire = createRequire(new URL('../backend/package.json', import.meta.url));
 const { CloudFormationClient, DescribeStacksCommand } = backendRequire('@aws-sdk/client-cloudformation');
-const { CloudFrontClient, CreateInvalidationCommand } = backendRequire('@aws-sdk/client-cloudfront');
-const { PutObjectCommand, S3Client } = backendRequire('@aws-sdk/client-s3');
 
 const root = new URL('../', import.meta.url);
 const envPath = new URL('../.env', import.meta.url);
@@ -17,6 +15,7 @@ const env = Object.fromEntries(text.split(/\r?\n/).filter((line) => line.trim() 
 }));
 const region = env.AWS_REGION;
 const stack = env.STACK_NAME || 'civicloop';
+const siteOrigin = env.SITE_ORIGIN || 'https://civicloop-coral.vercel.app';
 if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;
 if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION to the selected Region shown in AWS Settings > View all projects > Overview > Additional Info > Region.');
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
@@ -30,6 +29,7 @@ console.log('Building Civicloop with AWS SAM...');
 run('npm', ['install', '--prefix', 'backend', '--omit=dev']);
 run('sam', ['build', '--template-file', 'template.yaml']);
 const params = [
+  `SiteOrigin=${siteOrigin}`,
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
@@ -51,11 +51,6 @@ const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.Cognit
 await writeFile(new URL('../config.js', import.meta.url), `window.CIVICLOOP_CONFIG = ${JSON.stringify(publicConfig)};\n`, { mode: 0o644 });
 
 if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && !env.GOOGLE_OAUTH_CLIENT_ID.startsWith('your_') && !env.GOOGLE_OAUTH_CLIENT_SECRET.startsWith('replace_')) run('node', ['backend/configure-google.mjs']);
-const s3 = new S3Client({ region });
-const contentTypes = { 'index.html': 'text/html; charset=utf-8', 'styles.css': 'text/css; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'auth.js': 'text/javascript; charset=utf-8', 'config.js': 'text/javascript; charset=utf-8' };
-for (const [file, contentType] of Object.entries(contentTypes)) {
-  await s3.send(new PutObjectCommand({ Bucket: outputs.WebBucketName, Key: file, Body: await readFile(new URL(`../${file}`, import.meta.url)), ContentType: contentType }));
-}
-const cloudfront = new CloudFrontClient({ region: 'us-east-1' });
-await cloudfront.send(new CreateInvalidationCommand({ DistributionId: outputs.WebDistributionId, InvalidationBatch: { CallerReference: `civicloop-${Date.now()}`, Paths: { Quantity: 1, Items: ['/*'] } } }));
-console.log(`Civicloop is deployed at ${outputs.WebUrl}`);
+console.log(`Civicloop API deployed for ${siteOrigin}: ${outputs.ApiUrl}`);
+console.log(`Google OAuth redirect URI: ${outputs.CognitoDomain}/oauth2/idpresponse`);
+console.log('Commit config.js and push to GitHub to update the Vercel frontend.');
