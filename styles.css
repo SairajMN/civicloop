@@ -940,6 +940,32 @@ h1 em {
   font-size:9px;
   color:#9aa49d
 }
+.authority-share {
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  margin-top:16px;
+  padding:12px;
+  border:1px solid #e2e8e2;
+  border-radius:9px;
+  background:#f8faf8
+}
+.authority-share input {
+  margin:2px 0 0;
+  accent-color:var(--green)
+}
+.authority-share span,.authority-share strong,.authority-share small {
+  display:block
+}
+.authority-share strong {
+  font-size:11px
+}
+.authority-share small {
+  margin-top:4px;
+  color:var(--muted);
+  font-size:10px;
+  line-height:1.5
+}
 .draft-button svg {
   height:13px;
   width:13px;
