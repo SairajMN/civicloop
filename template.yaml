@@ -22,6 +22,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional recipient for test dispatch before a verified city contact is configured.
+  SesRecipientAddresses:
+    Type: String
+    Default: ''
+    Description: Comma-separated verified recipients configured for report dispatch.
   AuthorityEmailsJson:
     Type: String
     Default: '{}'
@@ -240,7 +244,14 @@ Resources:
               - HasSesSender
               - Effect: Allow
                 Action: [ses:SendEmail]
-                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesFromEmail}'
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: !Ref SesFromEmail
+                  'ForAllValues:StringEquals':
+                    ses:Recipients: !Split [',', !Ref SesRecipientAddresses]
+                  'Null':
+                    ses:Recipients: false
               - !Ref AWS::NoValue
       Events:
         ListReports:

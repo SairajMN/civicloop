@@ -17,6 +17,14 @@ const env = Object.fromEntries(text.split(/\r?\n/).filter((line) => line.trim() 
 const region = env.AWS_REGION;
 const stack = env.STACK_NAME || 'civicloop';
 const siteOrigin = env.SITE_ORIGIN || 'https://civicloop-coral.vercel.app';
+const authorityEmails = new Set([env.DEMO_INBOX_EMAIL].filter((email) => email?.includes('@')));
+try {
+  const authorities = JSON.parse(env.AUTHORITY_EMAILS_JSON || '{}');
+  for (const city of Object.values(authorities)) {
+    if (city.email?.includes('@')) authorityEmails.add(city.email);
+    for (const area of Object.values(city.areas || {})) if (area.email?.includes('@')) authorityEmails.add(area.email);
+  }
+} catch { throw new Error('AUTHORITY_EMAILS_JSON must be valid JSON.'); }
 if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;
 if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION to the selected Region shown in AWS Settings > View all projects > Overview > Additional Info > Region.');
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
@@ -34,6 +42,7 @@ const params = [
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
+  authorityEmails.size && `SesRecipientAddresses=${[...authorityEmails].join(',')}`,
   env.AUTHORITY_EMAILS_JSON && `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON}`,
 ].filter(Boolean);
 const deployArgs = ['deploy', '--stack-name', stack, '--region', region, '--capabilities', 'CAPABILITY_IAM', '--resolve-s3', '--no-confirm-changeset', '--no-fail-on-empty-changeset'];
