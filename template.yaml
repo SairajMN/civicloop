@@ -1,6 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Civicloop mobile web app, shared civic reports, and bounded Bedrock triage agent.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
 
 Parameters:
   SiteOrigin:
@@ -46,10 +49,13 @@ Conditions:
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
+    Metadata:
+      Rationale: Email/password sign-up is immediately usable without a verification message; the submitted email remains unverified.
     Properties:
       UserPoolName: civicloop-users
       UsernameAttributes: [email]
-      AutoVerifiedAttributes: [email]
+      LambdaConfig:
+        PreSignUp: !GetAtt SignupTriggerFunction.Arn
       Policies:
         PasswordPolicy:
           MinimumLength: 10
@@ -61,6 +67,33 @@ Resources:
         RecoveryMechanisms:
           - Name: verified_email
             Priority: 1
+
+  SignupTriggerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Rationale: Auto-confirm only self-service email/password sign-ups while preserving unverified email status.
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: true
+        EntryPoints: [auth-triggers.mjs]
+    Properties:
+      CodeUri: backend/
+      Handler: auth-triggers.handler
+      Timeout: 5
+      MemorySize: 128
+
+  SignupTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      Rationale: Allow only this Cognito user pool to invoke its pre-sign-up trigger.
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SignupTriggerFunction.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt UserPool.Arn
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient

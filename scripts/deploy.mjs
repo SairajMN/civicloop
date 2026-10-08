@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const backendRequire = createRequire(new URL('../backend/package.json', import.meta.url));
 const { CloudFormationClient, DescribeStacksCommand } = backendRequire('@aws-sdk/client-cloudformation');
+const { CognitoIdentityProviderClient, DeleteIdentityProviderCommand } = backendRequire('@aws-sdk/client-cognito-identity-provider');
 
 const root = new URL('../', import.meta.url);
 const envPath = new URL('../.env', import.meta.url);
@@ -50,7 +51,13 @@ await chmod(envPath, 0o600);
 const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.CognitoDomain, cognitoClientId: outputs.AppClientId };
 await writeFile(new URL('../config.js', import.meta.url), `window.CIVICLOOP_CONFIG = ${JSON.stringify(publicConfig)};\n`, { mode: 0o644 });
 
-if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && !env.GOOGLE_OAUTH_CLIENT_ID.startsWith('your_') && !env.GOOGLE_OAUTH_CLIENT_SECRET.startsWith('replace_')) run('node', ['backend/configure-google.mjs']);
+const cognito = new CognitoIdentityProviderClient({ region });
+try {
+  await cognito.send(new DeleteIdentityProviderCommand({ UserPoolId: outputs.UserPoolId, ProviderName: 'Google' }));
+  console.log('Removed the Google identity provider from Cognito.');
+} catch (error) {
+  if (error.name !== 'ResourceNotFoundException') throw error;
+}
 console.log(`Civicloop API deployed for ${siteOrigin}: ${outputs.ApiUrl}`);
-console.log(`Google OAuth redirect URI: ${outputs.CognitoDomain}/oauth2/idpresponse`);
+console.log('Cognito sign-up uses email and password without a verification or welcome email.');
 console.log('Commit config.js and push to GitHub to update the Vercel frontend.');

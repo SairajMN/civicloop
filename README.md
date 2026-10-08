@@ -6,7 +6,7 @@ Civicloop is a mobile-first neighborhood reporting app for public-space and envi
 
 - Responsive map and report feed for Bengaluru and Delhi, with a local-only demo mode.
 - Shared reports through API Gateway, Lambda, and DynamoDB.
-- Cognito sign-in using the hosted login page, OAuth authorization code with PKCE, and an optional Google identity provider.
+- Cognito email/password sign-in using the hosted login page and OAuth authorization code with PKCE. New accounts are confirmed without sending an email; email addresses remain unverified.
 - Private S3 evidence uploads using short-lived signed URLs. Files are limited to 25 MB and expire after one year.
 - Bedrock Triage Agent with read-only tools for nearby-report matching and configured area/department lookup.
 - Bedrock Follow-up Agent that drafts a neutral update only after a report is unresolved for 24 hours. The app requires a person to review and share it.
@@ -34,11 +34,10 @@ Requirements: Node.js 22+, AWS CLI authenticated with your AWS profile/SSO, and 
 1. Copy `.env.example` to `.env` and set `AWS_REGION` to your selected Region.
 2. Set `BEDROCK_MODEL_ID` to a direct model ID enabled in that Region. Leave it empty to deploy without Bedrock inference; deterministic draft text is used instead.
 3. If you want authority email, verify `SES_FROM_EMAIL` with SES first. Set `DEMO_INBOX_EMAIL` for a safe test recipient and replace the sample authority map only with contacts you have confirmed. Keep the JSON value single-quoted in `.env`, for example: `AUTHORITY_EMAILS_JSON='{"Bengaluru":{"department":"BBMP","email":"ward@example.org"}}'`.
-4. Run `node scripts/deploy.mjs` once with the Google credential placeholders unchanged. If you use a named AWS profile, run `AWS_PROFILE=sai node scripts/deploy.mjs` (replace `sai` with your profile name). This creates the AWS stack, writes the Cognito domain and public IDs to `.env` and `config.js`, and uploads only the app's HTML, CSS, and JavaScript files to the private web bucket. CloudFront serves that bucket over HTTPS.
-5. To enable Google sign-in, create a Google OAuth web client. Add the Cognito callback shown by `COGNITO_DOMAIN` in `.env`, followed by `/oauth2/idpresponse`, as an authorized redirect URI in Google Cloud. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` in `.env`, then run `node scripts/deploy.mjs` again. The script configures Google in Cognito through the AWS SDK; the secret is never included in browser assets or command-line arguments.
-6. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk and send emails.
+4. Run `node scripts/deploy.mjs`. If you use a named AWS profile, run `AWS_PROFILE=sai node scripts/deploy.mjs` (replace `sai` with your profile name). This creates or updates the AWS stack, writes the Cognito domain and public IDs to `.env` and `config.js`, and removes any Google identity provider from the Cognito user pool.
+5. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk and send emails.
 
-The Google secret, if present in `.env`, is sent to Cognito by `backend/configure-google.mjs`. The frontend receives only the API URL, Cognito domain, and public app client ID. The Cognito app client has no client secret. `.env` is ignored by Git.
+The frontend receives only the API URL, Cognito domain, and public app client ID. The Cognito app client has no client secret. Email addresses are deliberately left unverified, so Cognito email-based password recovery cannot be used until users verify their address. `.env` is ignored by Git.
 
 ## Agent boundaries and follow-up
 
@@ -48,6 +47,6 @@ Two distinct signed-in neighbors confirming a fix move the report to **Community
 
 ## AWS resources
 
-`template.yaml` defines the deployable stack. `backend/handler.mjs` implements the API and bounded Bedrock agent tools. `backend/configure-google.mjs` safely configures the optional Cognito Google provider. `scripts/deploy.mjs` is the deployment entry point. No AWS resources have been created by committing this project.
+`template.yaml` defines the deployable stack. `backend/handler.mjs` implements the API and bounded Bedrock agent tools. `backend/auth-triggers.mjs` confirms email/password sign-ups without verifying the submitted email. `scripts/deploy.mjs` is the deployment entry point. No AWS resources have been created by committing this project.
 
 The browser's nearby notification feature is a reminder while the app is open and location is refreshed; it is not a background push service. Authority email and social sharing remain user-triggered. Add a scheduled notification provider or official social API only when the required sender/authority accounts and credentials are available.
