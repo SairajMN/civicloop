@@ -182,7 +182,7 @@ Resources:
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
-        Format: esm
+        Format: cjs
         Target: es2022
         Minify: true
         EntryPoints: [handler.mjs]
