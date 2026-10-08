@@ -40,8 +40,8 @@
         </div>
         <div class="location-select-wrap">
           <span class="location-icon"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 8.3c0 4.5-6.2 9-6.2 9S3.8 12.8 3.8 8.3a6.2 6.2 0 1 1 12.4 0Z"/><circle cx="10" cy="8" r="2"/></svg></span>
-          <label for="city-select" class="sr-only">Choose demo city</label>
-          <select id="city-select" aria-label="Choose demo city"><option value="Bengaluru">Bengaluru, Karnataka</option><option value="Delhi">Delhi, India</option></select>
+          <label for="city-select" class="sr-only">Choose city or municipality</label>
+          <select id="city-select" aria-label="Choose city or municipality"><option value="Bengaluru">Bengaluru, Karnataka</option><option value="Delhi">Delhi, India</option><option value="Other">Other location…</option></select>
           <span class="select-chevron" aria-hidden="true">⌄</span>
         </div>
       </section>
@@ -56,7 +56,7 @@
       <section id="map-section" class="workspace-grid">
         <div class="map-panel panel">
           <div class="panel-heading map-heading">
-            <div><span class="section-kicker">LIVE NEIGHBORHOOD</span><h2>Issues around you</h2><span class="map-hint">Tap the map to place a report pin</span></div>
+            <div><span class="section-kicker">LIVE NEIGHBORHOOD</span><h2>Issues around you</h2><span class="map-hint">Tap anywhere on the map to place a report pin</span></div>
             <button class="button button-quiet location-button" id="locate-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg><span>Use my location</span></button>
           </div>
           <div class="map-wrap"><div id="map" role="application" aria-label="Map with neighborhood issue markers"><div class="map-fallback"><span class="map-fallback-pin">•</span><strong>Loading neighborhood map…</strong><small>OpenStreetMap</small></div></div><div class="map-legend"><span><i class="legend-dot dot-open"></i> Open</span><span><i class="legend-dot dot-progress"></i> In progress</span><span><i class="legend-dot dot-fixed"></i> Fix to verify</span></div></div>
@@ -79,11 +79,12 @@
     <dialog id="report-dialog" class="dialog report-dialog">
       <form id="report-form" method="dialog">
         <div class="dialog-head"><div><span class="section-kicker">NEW COMMUNITY REPORT</span><h2>What needs attention?</h2></div><button class="icon-button close-dialog" value="cancel" aria-label="Close">×</button></div>
-        <p class="dialog-copy">Share what you saw. Set a map pin or add your location before submitting.</p>
+        <p class="dialog-copy">Share what you saw. Use GPS or tap any point on the map. Enter its city so the report is filed in the right place.</p>
         <label class="field-label" for="issue-category">Issue type</label>
         <select class="form-control" id="issue-category" required><option value="">Choose a category</option><option>Waste dumping</option><option>Plastic burning</option><option>Water leak</option><option>Blocked drain</option><option>Hazardous battery / e-waste</option><option>Other environmental issue</option></select>
         <label class="field-label" for="issue-title">Short title</label><input class="form-control" id="issue-title" maxlength="72" placeholder="e.g. Plastic waste burning near the bus stop" required>
         <label class="field-label" for="issue-details">What did you notice?</label><textarea class="form-control" id="issue-details" rows="3" maxlength="500" placeholder="Add useful details for the team who will check it." required></textarea>
+        <label class="field-label" for="issue-city">City or municipality</label><input class="form-control" id="issue-city" maxlength="60" placeholder="Enter the city for this map pin" required>
         <label class="field-label" for="issue-place">Area or nearest landmark</label><input class="form-control" id="issue-place" maxlength="120" placeholder="e.g. Mahadevapura bus stop">
         <div class="draft-row"><button class="button button-outline draft-button" id="draft-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 1.5 5.2L17 9l-5.5 1.8L10 16l-1.5-5.2L3 9l5.5-1.8L10 2Z"/></svg> Make a clear draft</button><span id="draft-note">AI-assisted summary and authority email</span></div>
         <label class="field-label" for="issue-summary">Report summary</label><textarea class="form-control summary-control" id="issue-summary" rows="3" maxlength="600" placeholder="Your reviewed summary will appear here."></textarea>

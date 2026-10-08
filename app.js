@@ -1,10 +1,17 @@
 const STORAGE_KEY = 'civicloop.reports.v1';
 const ALERTS_KEY = 'civicloop.nearby-alerts';
 const DEMO_CLIENT_KEY = 'civicloop.demo-client';
+const CITY_CENTERS_KEY = 'civicloop.city-centers';
 const CITIES = {
   Bengaluru: { center: [12.9718, 77.6412], zoom: 13 },
   Delhi: { center: [28.628, 77.218], zoom: 12 },
+  Other: { center: [20.5937, 78.9629], zoom: 5 },
 };
+try {
+  for (const [city, value] of Object.entries(JSON.parse(localStorage.getItem(CITY_CENTERS_KEY) || '{}'))) {
+    if (Array.isArray(value.center) && value.center.length === 2 && value.center.every(Number.isFinite)) CITIES[city] = value;
+  }
+} catch { /* Custom city map centers are optional. */ }
 const cloudMode = Boolean(window.CIVICLOOP_CONFIG?.apiBaseUrl && window.CivicAuth?.configured);
 const api = async (path, options = {}) => {
   const headers = { 'content-type': 'application/json', ...(window.CivicAuth?.token() ? { authorization: `Bearer ${window.CivicAuth.token()}` } : {}), ...options.headers };
@@ -58,6 +65,16 @@ function persist() {
 }
 
 function cityReports() { return reports.filter((report) => report.city === activeCity); }
+function rememberCity(city, center) {
+  if (!city) return;
+  const select = byId('city-select');
+  if (![...select.options].some((option) => option.value === city)) select.add(new Option(city, city));
+  if (!CITIES[city] && center) {
+    CITIES[city] = { center, zoom: 12 };
+    const custom = Object.fromEntries(Object.entries(CITIES).filter(([name]) => !['Bengaluru', 'Delhi', 'Other'].includes(name)));
+    try { localStorage.setItem(CITY_CENTERS_KEY, JSON.stringify(custom)); } catch { /* Reports still work if browser storage is unavailable. */ }
+  }
+}
 function statusClass(status) { return status === 'progress' ? 'progress' : status === 'claimed' ? 'claimed' : status === 'verified' ? 'verified' : ''; }
 function reportStatusLabel(report) {
   if (report.authorityEmailedAt && report.authorityRecipientType === 'demo') return 'Sent to demo inbox';
@@ -130,22 +147,29 @@ function categoryStyle(category = '') {
 
 function renderMap(items) {
   const hasLocation = currentLocation?.city === activeCity;
-  const center = hasLocation ? [currentLocation.lat, currentLocation.lng] : CITIES[activeCity].center;
+  const center = hasLocation ? [currentLocation.lat, currentLocation.lng] : (CITIES[activeCity] || CITIES.Other).center;
   if (!window.L) return;
   if (!map) {
     document.querySelector('.map-fallback')?.remove();
-    map = L.map('map', { zoomControl: true, scrollWheelZoom: false }).setView(center, hasLocation ? 14 : CITIES[activeCity].zoom);
+    map = L.map('map', { zoomControl: true, scrollWheelZoom: false }).setView(center, hasLocation ? 14 : (CITIES[activeCity] || CITIES.Other).zoom);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
     markerLayer = L.layerGroup().addTo(map);
-    map.on('click', (event) => {
+    map.on('click', async (event) => {
+      const nearest = Object.entries(CITIES).filter(([city]) => city !== 'Other').sort((a, b) => distanceKm(event.latlng.lat, event.latlng.lng, ...a[1].center) - distanceKm(event.latlng.lat, event.latlng.lng, ...b[1].center))[0];
+      const city = nearest && distanceKm(event.latlng.lat, event.latlng.lng, ...nearest[1].center) < 60 ? nearest[0] : 'Other';
+      const changedCity = city !== activeCity;
+      activeCity = city;
       currentLocation = { lat: event.latlng.lat, lng: event.latlng.lng, city: activeCity };
+      byId('city-select').value = activeCity;
       updateLocationLabel();
-      renderMap(cityReports());
+      if (changedCity && cloudMode) {
+        try { await refreshReports(); } catch (error) { render(); showToast(error.message); }
+      } else render();
       showToast('Report pin placed. Open “Report issue” to use it.');
     });
     setTimeout(() => map.invalidateSize(), 100);
   } else {
-    map.setView(center, hasLocation ? 14 : CITIES[activeCity].zoom, { animate: false });
+    map.setView(center, hasLocation ? 14 : (CITIES[activeCity] || CITIES.Other).zoom, { animate: false });
   }
   markerLayer.clearLayers();
   items.forEach((report) => {
@@ -211,16 +235,19 @@ async function applyCheck(kind) {
 function locateUser({ notify = false } = {}) {
   if (!navigator.geolocation) { showToast('Location is not available in this browser.'); return; }
   showToast('Finding your location…');
-  navigator.geolocation.getCurrentPosition((position) => {
+  navigator.geolocation.getCurrentPosition(async (position) => {
     const { latitude: lat, longitude: lng } = position.coords;
-    const nearest = Object.entries(CITIES).sort((a, b) => distanceKm(lat, lng, ...a[1].center) - distanceKm(lat, lng, ...b[1].center))[0];
-    if (distanceKm(lat, lng, ...nearest[1].center) > 60) { showToast('This demo only has sample locations in Bengaluru and Delhi. Place a map pin in either city to try it.'); return; }
-    const city = nearest[0];
+    const nearest = Object.entries(CITIES).filter(([city]) => city !== 'Other').sort((a, b) => distanceKm(lat, lng, ...a[1].center) - distanceKm(lat, lng, ...b[1].center))[0];
+    const city = nearest && distanceKm(lat, lng, ...nearest[1].center) < 60 ? nearest[0] : 'Other';
+    const changedCity = city !== activeCity;
     currentLocation = { lat, lng, city };
-    if (city !== activeCity) { activeCity = city; byId('city-select').value = city; }
+    if (changedCity) { activeCity = city; byId('city-select').value = city; }
     if (map) map.setView([lat, lng], 14);
     updateLocationLabel();
-    render();
+    if (changedCity && cloudMode) { try { await refreshReports(); } catch (error) { render(); showToast(error.message); } }
+    else render();
+    if (byId('issue-city').value === 'Other') byId('issue-city').value = '';
+    if (city !== 'Other') byId('issue-city').value = city;
     const close = nearbyItems().map((report) => ({ report, distance: distanceKm(lat, lng, report.lat, report.lng) })).filter((item) => item.distance <= 1.5).sort((a, b) => a.distance - b.distance);
     if (close.length) {
       showToast(`${close.length} open report${close.length === 1 ? '' : 's'} within 1.5 km. Tap a pin or card to check.`);
@@ -250,9 +277,11 @@ async function draftSummary() {
   if (!title && !details) { showToast('Add a title or a few details first.'); return; }
   if (cloudMode) {
     if (!requireSignIn()) return;
+    const city = byId('issue-city').value.trim();
     if (!currentLocation) { showToast('Set a map pin or use your location before asking the agent.'); return; }
+    if (!city) { showToast('Add the city or municipality for this location.'); return; }
     try {
-      const { draft } = await api('/agent/triage', { method: 'POST', body: JSON.stringify({ city: currentLocation.city, place: byId('issue-place').value.trim(), category, title: title || details.slice(0, 72), details, lat: currentLocation.lat, lng: currentLocation.lng }) });
+      const { draft } = await api('/agent/triage', { method: 'POST', body: JSON.stringify({ city, place: byId('issue-place').value.trim(), category, title: title || details.slice(0, 72), details, lat: currentLocation.lat, lng: currentLocation.lng }) });
       byId('issue-summary').value = draft.summary || `${category}: ${title || details}`;
       byId('draft-note').textContent = draft.emailDraftBy === 'bedrock' ? 'Bedrock drafted the summary and authority email' : 'Bedrock unavailable · using a clear report template';
       const matches = (draft.duplicateCandidates || []).slice(0, 2).map((item) => `${item.id}: ${item.title}`).join('; ');
@@ -269,8 +298,13 @@ async function createReport(event) {
   const title = byId('issue-title').value.trim();
   const details = byId('issue-details').value.trim();
   if (!currentLocation) { showToast('Set a map pin or use your location before submitting.'); return; }
-  const city = currentLocation.city;
+  const city = byId('issue-city').value.trim();
+  if (!city) { showToast('Add the city or municipality for this location.'); return; }
   const [lat, lng] = [currentLocation.lat, currentLocation.lng];
+  currentLocation = { lat, lng, city };
+  rememberCity(city, [lat, lng]);
+  activeCity = city;
+  byId('city-select').value = city;
   const place = byId('issue-place').value.trim() || 'Pinned location';
   const shareAuthority = byId('share-authority').checked;
   if (cloudMode) {
@@ -435,7 +469,10 @@ async function shareUpdate() {
   catch { byId('share-dialog').close(); showToast('Copy the update from the share sheet if your browser supports it.'); }
 }
 
-document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', () => byId('report-dialog').showModal()));
+document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', () => {
+  byId('issue-city').value = currentLocation?.city === 'Other' || activeCity === 'Other' ? '' : currentLocation?.city || activeCity;
+  byId('report-dialog').showModal();
+}));
 document.querySelectorAll('.close-dialog').forEach((button) => button.addEventListener('click', () => byId('report-dialog').close()));
 byId('report-form').addEventListener('submit', createReport);
 byId('auth-button').addEventListener('click', () => window.CivicAuth.token() ? window.CivicAuth.signOut() : window.CivicAuth.signIn());
@@ -446,6 +483,7 @@ byId('locate-button').addEventListener('click', () => locateUser());
 byId('bottom-check-button').addEventListener('click', () => locateUser({ notify: true }));
 byId('nearby-alerts-button').addEventListener('click', toggleNearbyAlerts);
 byId('city-select').addEventListener('change', async (event) => { activeCity = event.target.value; currentLocation = null; byId('location-label').textContent = 'Add location'; byId('location-coords').textContent = 'Choose to use GPS'; render(); if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } } });
+for (const city of Object.keys(CITIES)) rememberCity(city);
 byId('all-reports-button').addEventListener('click', () => { showingAll = !showingAll; render(); });
 byId('filter-button').addEventListener('click', () => { showingAll = !showingAll; render(); showToast(showingAll ? 'Showing all reports.' : 'Showing reports that need a check.'); });
 byId('report-list').addEventListener('click', (event) => { const card = event.target.closest('[data-report-id]'); if (card) openDetails(card.dataset.reportId); });

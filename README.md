@@ -5,6 +5,7 @@ Civicloop is a mobile-first neighborhood reporting app for environmental and pub
 ## Included
 
 - Responsive map and report feed for Bengaluru and Delhi, with a local-only demo mode.
+- Reports can be pinned anywhere on the map. Bengaluru and Delhi are prefilled; for other places, enter the city or municipality so the report is grouped and routed correctly.
 - Shared reports through API Gateway, Lambda, and DynamoDB.
 - Cognito email/password sign-in using the hosted login page and OAuth authorization code with PKCE. New accounts are confirmed without sending an email; email addresses remain unverified.
 - Private S3 evidence uploads using short-lived signed URLs. Files are limited to 25 MB and expire after one year.
