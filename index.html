@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f7f8f4">
+    <meta name="description" content="Report neighborhood environmental issues and help verify when they are fixed.">
+    <title>Civicloop — make local issues visible</title>
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://tile.openstreetmap.org">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Civicloop home">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.5c-5 0-9 4-9 9 0 6.3 9 16 9 16s9-9.7 9-16c0-5-4-9-9-9Z"/><path d="M11.5 15.5c2.7-.2 5.1-2.3 6.2-5.2 2.1 1.8 3.1 4.4 2.5 6.7-.7 2.8-3.6 4.2-6.5 3.4"/></svg></span>
+        <span>civic<span>loop</span></span>
+      </a>
+      <nav class="top-nav" aria-label="Main navigation">
+        <a class="nav-link active" href="#map-section">Explore map</a>
+        <a class="nav-link" href="#reports-section">Reports <span id="report-count" class="nav-count">0</span></a>
+      </nav>
+      <div class="top-actions">
+        <span class="demo-pill"><span></span> Demo mode</span>
+        <button class="button button-quiet ward-button" id="ward-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17V6l7-3 7 3v11M6 17v-5h8v5M7 8h.01M10 8h.01M13 8h.01"/></svg>Ward desk</button>
+        <button class="button button-primary new-report-button" type="button" data-open-report><span aria-hidden="true">+</span> Report issue</button>
+        <button class="icon-button mobile-report" type="button" data-open-report aria-label="Report an issue"><span aria-hidden="true">+</span></button>
+      </div>
+    </header>
+
+    <main id="top" class="page-shell">
+      <section class="intro-row">
+        <div>
+          <div class="eyebrow"><span class="eyebrow-dot"></span> YOUR NEIGHBORHOOD, IN THE LOOP</div>
+          <h1>Make local issues <em>visible.</em></h1>
+          <p class="intro-copy">Spot something that needs attention? Report it, check back, and help your neighborhood close the loop.</p>
+        </div>
+        <div class="location-select-wrap">
+          <span class="location-icon"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 8.3c0 4.5-6.2 9-6.2 9S3.8 12.8 3.8 8.3a6.2 6.2 0 1 1 12.4 0Z"/><circle cx="10" cy="8" r="2"/></svg></span>
+          <label for="city-select" class="sr-only">Choose demo city</label>
+          <select id="city-select" aria-label="Choose demo city"><option value="Bengaluru">Bengaluru, Karnataka</option><option value="Delhi">Delhi, India</option></select>
+          <span class="select-chevron" aria-hidden="true">⌄</span>
+        </div>
+      </section>
+
+      <section class="metric-row" aria-label="Neighborhood report summary">
+        <article class="metric-card metric-open"><span class="metric-label">Needs attention</span><div><strong id="open-count">0</strong><span class="metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 22 20H2L12 3Z"/><path d="M12 9v5m0 3h.01"/></svg></span></div><span class="metric-note">open or in progress</span></article>
+        <article class="metric-card metric-check"><span class="metric-label">Community checks</span><div><strong id="check-count">0</strong><span class="metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></span></div><span class="metric-note">neighbors contributed</span></article>
+        <article class="metric-card metric-fixed"><span class="metric-label">Closed this week</span><div><strong id="fixed-count">0</strong><span class="metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18m9-9H3"/><circle cx="12" cy="12" r="9"/></svg></span></div><span class="metric-note">community verified</span></article>
+        <div class="metric-aside"><span class="live-pulse"></span><span><strong>Community powered</strong><small>Reports stay open until the fix is checked.</small></span></div>
+      </section>
+
+      <section id="map-section" class="workspace-grid">
+        <div class="map-panel panel">
+          <div class="panel-heading map-heading">
+            <div><span class="section-kicker">LIVE NEIGHBORHOOD</span><h2>Issues around you</h2><span class="map-hint">Tap the map to place a report pin</span></div>
+            <button class="button button-quiet location-button" id="locate-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="2"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></svg><span>Use my location</span></button>
+          </div>
+          <div class="map-wrap"><div id="map" role="application" aria-label="Map with neighborhood issue markers"><div class="map-fallback"><span class="map-fallback-pin">•</span><strong>Loading neighborhood map…</strong><small>OpenStreetMap</small></div></div><div class="map-legend"><span><i class="legend-dot dot-open"></i> Open</span><span><i class="legend-dot dot-progress"></i> In progress</span><span><i class="legend-dot dot-fixed"></i> Fix to verify</span></div></div>
+          <div class="map-footer"><div class="avatar-stack" aria-hidden="true"><span>AS</span><span>RK</span><span>MJ</span><span>+</span></div><span><strong id="neighbor-count">0 neighbors</strong> have checked in around this area</span><button class="text-button" id="nearby-alerts-button" type="button">Nearby alerts <span id="alerts-state">off</span><span aria-hidden="true">→</span></button></div>
+        </div>
+
+        <aside id="reports-section" class="reports-panel panel">
+          <div class="panel-heading reports-heading"><div><span class="section-kicker">COMMUNITY FEED</span><h2>Needs a second look</h2></div><button class="filter-button" id="filter-button" type="button" aria-label="Filter reports">☷</button></div>
+          <div class="feed-description">A quick check from someone nearby helps a report move forward.</div>
+          <div id="report-list" class="report-list" aria-live="polite"></div>
+          <button class="button button-outline all-reports-button" id="all-reports-button" type="button">View all reports <span aria-hidden="true">→</span></button>
+          <div class="neighbor-nudge"><span class="nudge-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 14.7 9.3 21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7L12 3Z"/></svg></span><span><strong>Passing by?</strong><small>Check if a nearby issue is still there.</small></span></div>
+        </aside>
+      </section>
+
+      <section class="bottom-strip"><div class="bottom-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-4.4 7-11a7 7 0 1 0-14 0c0 6.6 7 11 7 11Z"/><circle cx="12" cy="10" r="2.5"/></svg></div><p><strong>See an issue on your way?</strong> Add a quick check to an existing report instead of starting over.</p><button class="button button-dark" id="bottom-check-button" type="button">Find nearby reports <span aria-hidden="true">→</span></button></section>
+      <footer class="footer"><a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.5c-5 0-9 4-9 9 0 6.3 9 16 9 16s9-9.7 9-16c0-5-4-9-9-9Z"/><path d="M11.5 15.5c2.7-.2 5.1-2.3 6.2-5.2 2.1 1.8 3.1 4.4 2.5 6.7-.7 2.8-3.6 4.2-6.5 3.4"/></svg></span><span>civic<span>loop</span></span></a><span>Small actions. Cleaner, safer streets.</span><span class="footer-demo">Prototype · Bengaluru sample data</span></footer>
+    </main>
+
+    <dialog id="report-dialog" class="dialog report-dialog">
+      <form id="report-form" method="dialog">
+        <div class="dialog-head"><div><span class="section-kicker">NEW COMMUNITY REPORT</span><h2>What needs attention?</h2></div><button class="icon-button close-dialog" value="cancel" aria-label="Close">×</button></div>
+        <p class="dialog-copy">Share what you saw. Set a map pin or add your location before submitting.</p>
+        <label class="field-label" for="issue-category">Issue type</label>
+        <select class="form-control" id="issue-category" required><option value="">Choose a category</option><option>Waste dumping</option><option>Plastic burning</option><option>Water leak</option><option>Blocked drain</option><option>Hazardous battery / e-waste</option><option>Other environmental issue</option></select>
+        <label class="field-label" for="issue-title">Short title</label><input class="form-control" id="issue-title" maxlength="72" placeholder="e.g. Plastic waste burning near the bus stop" required>
+        <label class="field-label" for="issue-details">What did you notice?</label><textarea class="form-control" id="issue-details" rows="3" maxlength="500" placeholder="Add useful details for the team who will check it." required></textarea>
+        <div class="draft-row"><button class="button button-outline draft-button" id="draft-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 1.5 5.2L17 9l-5.5 1.8L10 16l-1.5-5.2L3 9l5.5-1.8L10 2Z"/></svg> Make a clear draft</button><span>Local demo helper · review before sharing</span></div>
+        <label class="field-label" for="issue-summary">Report summary</label><textarea class="form-control summary-control" id="issue-summary" rows="3" maxlength="600" placeholder="Your reviewed summary will appear here."></textarea>
+        <div class="upload-location-row"><label class="upload-box" for="issue-photo"><svg viewBox="0 0 22 22" aria-hidden="true"><path d="M3 7h4l1.5-2h5L15 7h4v11H3V7Z"/><circle cx="11" cy="12" r="3"/></svg><span><strong>Add photo or video</strong><small id="photo-name">Optional · session preview only</small></span><input id="issue-photo" type="file" accept="image/*,video/*" capture="environment"></label><button class="location-box" id="form-location-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 8.3c0 4.5-6.2 9-6.2 9S3.8 12.8 3.8 8.3a6.2 6.2 0 1 1 12.4 0Z"/><circle cx="10" cy="8" r="2"/></svg><span><strong id="location-label">Add location</strong><small id="location-coords">Choose to use GPS</small></span></button></div>
+        <div id="photo-preview" class="photo-preview" hidden></div>
+        <p class="privacy-note"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 2 15 4v4.4c0 3.6-2.5 6-6 7.6-3.5-1.6-6-4-6-7.6V4l6-2Z"/><path d="M6.5 9 8.2 10.7 11.8 7"/></svg> Don't include faces, license plates, or private information. You choose what to share.</p>
+        <div class="dialog-actions"><button class="button button-quiet close-dialog" value="cancel" type="button">Cancel</button><button class="button button-primary" id="submit-report-button" type="submit">Add report <span aria-hidden="true">→</span></button></div>
+      </form>
+    </dialog>
+
+    <dialog id="detail-dialog" class="dialog detail-dialog"><div id="detail-content"></div></dialog>
+    <dialog id="ward-dialog" class="dialog ward-dialog"><div id="ward-content"></div></dialog>
+    <dialog id="share-dialog" class="dialog share-dialog"><div id="share-content"></div></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
