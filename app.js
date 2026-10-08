@@ -5,6 +5,14 @@ const CITIES = {
   Bengaluru: { center: [12.9718, 77.6412], zoom: 13 },
   Delhi: { center: [28.628, 77.218], zoom: 12 },
 };
+const cloudMode = Boolean(window.CIVICLOOP_CONFIG?.apiBaseUrl && window.CivicAuth?.configured);
+const api = async (path, options = {}) => {
+  const headers = { 'content-type': 'application/json', ...(window.CivicAuth?.token() ? { authorization: `Bearer ${window.CivicAuth.token()}` } : {}), ...options.headers };
+  const response = await fetch(`${window.CIVICLOOP_CONFIG.apiBaseUrl.replace(/\/$/, '')}${path}`, { ...options, headers });
+  const payload = response.status === 204 ? {} : await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Could not reach Civicloop.');
+  return payload;
+};
 
 const starterReports = [
   { id: 'CL-014', city: 'Bengaluru', category: 'Plastic burning', title: 'Plastic burning near the service road', details: 'Smoke was coming from a small roadside pile beside the service road. The exact spot is pinned for follow-up.', place: 'Mahadevapura', lat: 12.9938, lng: 77.6967, status: 'open', checks: 3, fixChecks: 0, age: '1 day ago', ageHours: 28, icon: '♨' },
@@ -44,6 +52,7 @@ function loadReports() {
 }
 
 function persist() {
+  if (cloudMode) return;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(reports)); }
   catch { showToast('Browser storage is full. This change may not survive a refresh.'); }
 }
@@ -65,6 +74,32 @@ function render() {
   renderReportList(items);
   renderMap(items);
   byId('alerts-state').textContent = localStorage.getItem(ALERTS_KEY) === 'on' ? 'on' : 'off';
+  byId('auth-label').innerHTML = cloudMode ? `<span></span> ${window.CivicAuth.email() ? esc(window.CivicAuth.email()) : 'Sign in to report'}` : '<span></span> Demo mode';
+  byId('auth-button').textContent = window.CivicAuth?.token() ? 'Sign out' : 'Sign in';
+  byId('auth-button').hidden = !cloudMode;
+  byId('ward-button').hidden = cloudMode && !window.CivicAuth.isWard();
+}
+
+async function refreshReports() {
+  if (!cloudMode) return;
+  const result = await api(`/reports?city=${encodeURIComponent(activeCity)}`);
+  reports = result.reports.map((report) => ({ ...report, age: ageLabel(report.createdAt), ageHours: (Date.now() - Date.parse(report.createdAt)) / 3600000, icon: iconForCategory(report.category) }));
+  render();
+}
+
+function ageLabel(createdAt) {
+  const hours = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 3600000));
+  if (hours < 1) return 'just now';
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function requireSignIn() {
+  if (!cloudMode || window.CivicAuth.token()) return true;
+  showToast('Sign in to contribute to shared reports.');
+  window.CivicAuth.signIn();
+  return false;
 }
 
 function renderReportList(items) {
@@ -134,17 +169,27 @@ function openDetails(id) {
     <p class="detail-description">${esc(report.details || report.summary || 'A community report has been added for this location.')}</p>
     ${report.summary ? `<p class="detail-description"><strong>Reviewed report draft:</strong> ${esc(report.summary)}</p>` : ''}
     <p class="detail-location">⌖ ${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)} · approximate report location</p>
-    ${report.photoName ? `<p class="detail-location">▧ Evidence selected: ${esc(report.photoName)} <span class="draft-row">Session preview only; media is not uploaded or saved.</span></p>` : ''}
+    ${report.photoName ? `<p class="detail-location">▧ Evidence ${cloudMode ? 'uploaded privately' : 'selected'}: ${esc(report.photoName)} <span class="draft-row">${cloudMode ? 'A signed-in neighbor can open the private file.' : 'Session preview only; media is not uploaded or saved.'}</span>${cloudMode ? `<button class="text-button" type="button" data-evidence="${esc(report.id)}">View evidence</button>` : ''}</p>` : ''}
     <div class="detail-counts"><span><strong>${Number(report.checks) || 0}</strong> community checks</span><span><strong>${Number(report.fixChecks) || 0}</strong> fix confirmations</span></div>
     <div class="checkin-box"><strong>Passing by? Add a quick check</strong><p>Your check updates this report; it won't create a duplicate ticket.</p><div class="checkin-actions"><button class="button button-outline" type="button" data-check="still">Still there</button><button class="button button-outline" type="button" data-check="fixed">Looks fixed</button><button class="button button-quiet" type="button" data-check="unsure">Can't verify</button></div></div>
     <div class="detail-actions"><button class="button button-quiet share-trigger" type="button">Share update</button><button class="button button-primary" type="button" data-close-detail>Done</button></div>`;
   if (!dialog.open) dialog.showModal();
 }
 
-function applyCheck(kind) {
+async function applyCheck(kind) {
   const report = reports.find((item) => item.id === selectedReportId);
   if (!report) return;
   if (kind === 'unsure') { showToast('Thanks for checking. No change was made to the report.'); byId('detail-dialog').close(); return; }
+  if (cloudMode) {
+    if (!requireSignIn()) return;
+    try {
+      await api(`/reports/${encodeURIComponent(report.id)}/check`, { method: 'POST', body: JSON.stringify({ kind }) });
+      await refreshReports();
+      openDetails(report.id);
+      showToast(kind === 'fixed' ? 'Fix noted. Two distinct neighbor checks verify it.' : 'Added to the shared report. Thanks for checking in.');
+    } catch (error) { showToast(error.message); }
+    return;
+  }
   report.checkins ||= {};
   const previous = report.checkins[demoClientId];
   if (!previous) report.checks = (Number(report.checks) || 0) + 1;
@@ -191,22 +236,57 @@ function distanceKm(lat1, lon1, lat2, lon2) {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function draftSummary() {
+async function draftSummary() {
   const category = byId('issue-category').value || 'Environmental issue';
   const title = byId('issue-title').value.trim();
   const details = byId('issue-details').value.trim();
   if (!title && !details) { showToast('Add a title or a few details first.'); return; }
+  if (cloudMode) {
+    if (!requireSignIn()) return;
+    if (!currentLocation) { showToast('Set a map pin or use your location before asking the agent.'); return; }
+    try {
+      const { draft } = await api('/agent/triage', { method: 'POST', body: JSON.stringify({ city: currentLocation.city, category, title: title || details.slice(0, 72), details, lat: currentLocation.lat, lng: currentLocation.lng }) });
+      byId('issue-summary').value = draft.summary || `${category}: ${title || details}`;
+      const matches = (draft.duplicateCandidates || []).slice(0, 2).map((item) => `${item.id}: ${item.title}`).join('; ');
+      showToast(matches ? `Draft ready. Possible nearby reports: ${matches}` : `${draft.department || 'Triage'} draft ready. Review before submitting.`);
+    } catch (error) { showToast(error.message); }
+    return;
+  }
   byId('issue-summary').value = `${category}: ${title || details}${details && title ? `. ${details}` : ''}`;
   showToast('Draft ready to review. This local demo does not call an AI model.');
 }
 
-function createReport(event) {
+async function createReport(event) {
   event.preventDefault();
   const title = byId('issue-title').value.trim();
   const details = byId('issue-details').value.trim();
   if (!currentLocation) { showToast('Set a map pin or use your location before submitting.'); return; }
   const city = currentLocation.city;
   const [lat, lng] = [currentLocation.lat, currentLocation.lng];
+  if (cloudMode) {
+    if (!requireSignIn()) return;
+    const file = byId('issue-photo').files[0];
+    try {
+      const result = await api('/reports', { method: 'POST', body: JSON.stringify({ city, category: byId('issue-category').value, title, details, summary: byId('issue-summary').value.trim(), lat, lng, photoName: file?.name || '' }) });
+      const report = result.report;
+      reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
+      let note = '';
+      if (file) {
+        try {
+          if (file.size > 25 * 1024 * 1024) throw new Error('Evidence must be under 25 MB.');
+          const upload = await api(`/reports/${encodeURIComponent(report.id)}/upload`, { method: 'POST', body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }) });
+          const uploaded = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
+          if (!uploaded.ok) throw new Error('The upload was rejected.');
+          await api(`/reports/${encodeURIComponent(report.id)}/evidence`, { method: 'POST', body: JSON.stringify({ evidenceKey: upload.evidenceKey, fileName: file.name }) });
+        } catch (error) { note = `Report saved; evidence upload failed: ${error.message}`; }
+      }
+      try { await refreshReports(); } catch { render(); note ||= 'Report saved. Refresh to load the latest shared neighborhood feed.'; }
+      byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
+      showToast(note || 'Report shared with the neighborhood.');
+      openDetails(report.id);
+    } catch (error) { showToast(error.message); }
+    return;
+  }
   const report = {
     id: `CL-${String(Date.now()).slice(-6)}`, city, category: byId('issue-category').value, title, details, createdAt: Date.now(),
     summary: byId('issue-summary').value.trim(), place: 'Pinned location',
@@ -226,23 +306,60 @@ function iconForCategory(category = '') {
 }
 
 function showWardDesk() {
+  if (cloudMode && !window.CivicAuth.isWard()) { showToast('This view is for assigned ward desk operators.'); return; }
   const list = cityReports().filter((report) => report.status !== 'verified');
-  byId('ward-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">SIMULATED AUTHORITY INBOX</span><h2 class="dialog-section-title">Ward desk</h2><p class="dialog-section-copy">Demo only · changes stay in this browser.</p></div><button class="icon-button close-ward" type="button" aria-label="Close">×</button></div><div class="ward-list">${list.length ? list.map((report) => `<div class="ward-row"><span class="report-illustration ${categoryStyle(report.category)}" aria-hidden="true">${esc(report.icon || '•')}</span><div><strong>${esc(report.title)}</strong><small>${esc(report.place || report.city)} · ${esc(report.id)} · ${esc(statusLabels[report.status] || 'Open')}</small></div><button class="button button-outline" type="button" data-ack="${esc(report.id)}">${report.status === 'open' ? 'Acknowledge' : 'Mark fix'}</button></div>`).join('') : '<div class="ward-empty">Everything in this area is community verified.</div>'}</div>`;
+  byId('ward-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">${cloudMode ? 'ASSIGNED AUTHORITY INBOX' : 'SIMULATED AUTHORITY INBOX'}</span><h2 class="dialog-section-title">Ward desk</h2><p class="dialog-section-copy">${cloudMode ? 'Email and status updates require an assigned WardDesk sign-in.' : 'Demo only · changes stay in this browser.'}</p></div><button class="icon-button close-ward" type="button" aria-label="Close">×</button></div><div class="ward-list">${list.length ? list.map((report) => `<div class="ward-row"><span class="report-illustration ${categoryStyle(report.category)}" aria-hidden="true">${esc(report.icon || '•')}</span><div><strong>${esc(report.title)}</strong><small>${esc(report.place || report.city)} · ${esc(report.id)} · ${esc(statusLabels[report.status] || 'Open')}</small></div><button class="button button-outline" type="button" data-ack="${esc(report.id)}">${report.status === 'open' ? 'Acknowledge' : 'Mark fix'}</button>${cloudMode ? `<button class="button button-quiet" type="button" data-dispatch="${esc(report.id)}">Email authority</button>` : ''}</div>`).join('') : '<div class="ward-empty">Everything in this area is community verified.</div>'}</div>`;
   if (!byId('ward-dialog').open) byId('ward-dialog').showModal();
 }
 
-function authorityUpdate(id) {
+async function authorityUpdate(id) {
   const report = reports.find((item) => item.id === id);
   if (!report) return;
+  if (cloudMode) {
+    try {
+      await api(`/reports/${encodeURIComponent(id)}/status`, { method: 'POST', body: JSON.stringify({ status: report.status === 'open' ? 'progress' : 'claimed' }) });
+      await refreshReports();
+      showWardDesk();
+    } catch (error) { showToast(error.message); }
+    return;
+  }
   if (report.status === 'open') report.status = 'progress';
   else { report.status = 'claimed'; report.fixChecks = 0; }
   persist(); render(); showWardDesk();
 }
 
-function showShareDialog() {
+async function dispatchAuthorityEmail(id) {
+  if (!requireSignIn()) return;
+  const report = reports.find((item) => item.id === id);
+  if (!report) return;
+  try {
+    const route = await api(`/authority?city=${encodeURIComponent(report.city)}`);
+    if (!route.canSend) { showToast('Configure a verified SES sender and recipient before sending email.'); return; }
+    const summary = report.summary || report.details;
+    const recipientType = route.testRecipient ? 'TEST INBOX' : route.department;
+    const confirmed = window.confirm(`Send this report email to ${route.email} (${recipientType})?\n\n${report.title}\n${summary}\nLocation: ${report.lat}, ${report.lng}\nEvidence: ${report.photoName || 'None'}${report.photoName ? ' (private link expires in 24 hours)' : ''}\n\nThis will send a message from Civicloop. Continue?`);
+    if (!confirmed) return;
+    await api(`/reports/${encodeURIComponent(id)}/dispatch`, { method: 'POST', body: '{}' });
+    await refreshReports();
+    showWardDesk();
+    showToast(`Email sent to ${route.email}.`);
+  } catch (error) { showToast(error.message); }
+}
+
+async function showShareDialog() {
   const report = reports.find((item) => item.id === selectedReportId);
   if (!report) return;
-  const text = `Community update · ${report.id}\n${report.title}\n${report.place || report.city} · reported ${report.age || 'just now'}\nStatus: ${statusLabels[report.status] || 'Needs attention'}\n${report.checks} community check${report.checks === 1 ? '' : 's'}. Please use the relevant official reporting channel for follow-up.`;
+  const createdAt = typeof report.createdAt === 'number' ? report.createdAt : Date.parse(report.createdAt || '');
+  const ageHours = Number.isFinite(Number(report.ageHours)) ? Number(report.ageHours) : Number.isFinite(createdAt) ? (Date.now() - createdAt) / 3600000 : 0;
+  if (report.status === 'verified' || ageHours < 24) { showToast('Follow-up sharing is available after an unresolved report has been open for 24 hours.'); return; }
+  let text = `Community update · ${report.id}\n${report.title}\n${report.place || report.city} · reported ${report.age || 'just now'}\nStatus: ${statusLabels[report.status] || 'Needs attention'}\n${report.checks} community check${report.checks === 1 ? '' : 's'}. Please use the relevant official reporting channel for follow-up.`;
+  if (cloudMode) {
+    if (!requireSignIn()) return;
+    try {
+      const { draft } = await api(`/reports/${encodeURIComponent(report.id)}/ai`, { method: 'POST', body: JSON.stringify({ task: 'follow-up' }) });
+      text = `${draft.shareDraft || text}\n\nRecommendation: ${draft.recommendation || 'Review the report before sharing.'}`;
+    } catch (error) { showToast(error.message); return; }
+  }
   byId('share-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">USER-REVIEWED UPDATE</span><h2 class="dialog-section-title">Share this report</h2><p class="dialog-section-copy">Review the wording. Civicloop won't post or tag anyone automatically.</p></div><button class="icon-button close-share" type="button" aria-label="Close">×</button></div><textarea class="share-text" id="share-text" maxlength="500" aria-label="Edit share text">${esc(text)}</textarea><div class="share-footer"><button class="button button-quiet close-share" type="button">Cancel</button><button class="button button-outline copy-share" type="button">Copy text</button><button class="button button-primary system-share" type="button">Share update</button></div>`;
   byId('share-dialog').showModal();
 }
@@ -294,13 +411,14 @@ async function shareUpdate() {
 document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', () => byId('report-dialog').showModal()));
 document.querySelectorAll('.close-dialog').forEach((button) => button.addEventListener('click', () => byId('report-dialog').close()));
 byId('report-form').addEventListener('submit', createReport);
+byId('auth-button').addEventListener('click', () => window.CivicAuth.token() ? window.CivicAuth.signOut() : window.CivicAuth.signIn());
 byId('draft-button').addEventListener('click', draftSummary);
 byId('issue-photo').addEventListener('change', handlePhoto);
 byId('form-location-button').addEventListener('click', () => locateUser());
 byId('locate-button').addEventListener('click', () => locateUser());
 byId('bottom-check-button').addEventListener('click', () => locateUser({ notify: true }));
 byId('nearby-alerts-button').addEventListener('click', toggleNearbyAlerts);
-byId('city-select').addEventListener('change', (event) => { activeCity = event.target.value; currentLocation = null; byId('location-label').textContent = 'Add location'; byId('location-coords').textContent = 'Choose to use GPS'; render(); });
+byId('city-select').addEventListener('change', async (event) => { activeCity = event.target.value; currentLocation = null; byId('location-label').textContent = 'Add location'; byId('location-coords').textContent = 'Choose to use GPS'; render(); if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } } });
 byId('all-reports-button').addEventListener('click', () => { showingAll = !showingAll; render(); });
 byId('filter-button').addEventListener('click', () => { showingAll = !showingAll; render(); showToast(showingAll ? 'Showing all reports.' : 'Showing reports that need a check.'); });
 byId('report-list').addEventListener('click', (event) => { const card = event.target.closest('[data-report-id]'); if (card) openDetails(card.dataset.reportId); });
@@ -308,11 +426,13 @@ byId('ward-button').addEventListener('click', showWardDesk);
 byId('ward-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-ward')) byId('ward-dialog').close();
   const button = event.target.closest('[data-ack]'); if (button) authorityUpdate(button.dataset.ack);
+  const dispatch = event.target.closest('[data-dispatch]'); if (dispatch) dispatchAuthorityEmail(dispatch.dataset.dispatch);
 });
 byId('detail-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-detail, [data-close-detail]')) byId('detail-dialog').close();
   const check = event.target.closest('[data-check]'); if (check) applyCheck(check.dataset.check);
   if (event.target.closest('.share-trigger')) showShareDialog();
+  const evidence = event.target.closest('[data-evidence]'); if (evidence) api(`/reports/${encodeURIComponent(evidence.dataset.evidence)}/evidence`).then(({ url }) => location.assign(url)).catch((error) => showToast(error.message));
 });
 byId('share-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-share')) byId('share-dialog').close();
@@ -325,3 +445,7 @@ byId('report-dialog').addEventListener('click', (event) => { if (event.target ==
 byId('detail-dialog').addEventListener('close', () => { selectedReportId = null; });
 
 render();
+window.CIVICLOOP_AUTH_READY?.then(async () => {
+  render();
+  if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } }
+});

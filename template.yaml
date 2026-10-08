@@ -1,0 +1,409 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Civicloop mobile web app, shared civic reports, and bounded Bedrock triage agent.
+
+Parameters:
+  BedrockModelId:
+    Type: String
+    Default: ''
+    Description: Optional model ID available in the selected Region; empty uses a local draft fallback.
+  SesFromEmail:
+    Type: String
+    Default: ''
+    Description: Optional verified SES sender address for human-triggered ward email.
+  DemoInboxEmail:
+    Type: String
+    Default: ''
+    Description: Optional recipient for test dispatch before a verified city contact is configured.
+  AuthorityEmailsJson:
+    Type: String
+    Default: '{}'
+    Description: City-to-department and verified contact mapping JSON; use real authority contacts only.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    Timeout: 15
+    MemorySize: 512
+    Environment:
+      Variables:
+        REPORTS_TABLE: !Ref ReportsTable
+        EVIDENCE_BUCKET: !Ref EvidenceBucket
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        SES_FROM_EMAIL: !Ref SesFromEmail
+        DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
+        AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
+        APP_ORIGIN: !Sub 'https://${WebDistribution.DomainName}'
+
+Conditions:
+  HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: civicloop-users
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: civicloop-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      RefreshTokenRotation:
+        Feature: ENABLED
+        RetryGracePeriodSeconds: 10
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: [http://localhost:8080/, !Sub 'https://${WebDistribution.DomainName}/']
+      LogoutURLs: [http://localhost:8080/, !Sub 'https://${WebDistribution.DomainName}/']
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 7
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub 'civicloop-${AWS::AccountId}-${AWS::Region}'
+      UserPoolId: !Ref UserPool
+      ManagedLoginVersion: 2
+
+  WardDeskGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: WardDesk
+      Description: Civicloop municipal desk operators; assign only to trusted demo operators.
+      UserPoolId: !Ref UserPool
+
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: city
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: city-createdAt-index
+          KeySchema:
+            - AttributeName: city
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT]
+            AllowedOrigins: ['http://localhost:8080', !Sub 'https://${WebDistribution.DomainName}']
+            ExposedHeaders: [ETag]
+            MaxAge: 300
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-evidence-after-one-year
+            Status: Enabled
+            ExpirationInDays: 365
+            Prefix: reports/
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-web-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        Origins:
+          - Id: CivicloopWeb
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !Ref WebOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: CivicloopWeb
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}'
+
+  ReportsApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Sub 'https://${WebDistribution.DomainName}', http://localhost:8080]
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [GET, POST, OPTIONS]
+        MaxAge: 600
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+              audience: [!Ref UserPoolClient]
+
+  CivicloopApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: esm
+        Target: es2022
+        Minify: true
+        EntryPoints: [handler.mjs]
+    Properties:
+      CodeUri: backend/
+      Handler: handler.handler
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:TransactWriteItems]
+              Resource:
+                - !GetAtt ReportsTable.Arn
+                - !Sub '${ReportsTable.Arn}/index/*'
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource: !Sub '${EvidenceBucket.Arn}/reports/*'
+            - Effect: Allow
+              Action: [bedrock:InvokeModel]
+              Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+            - !If
+              - HasSesSender
+              - Effect: Allow
+                Action: [ses:SendEmail]
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesFromEmail}'
+              - !Ref AWS::NoValue
+      Events:
+        ListReports:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        GetReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        GetEvidence:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/evidence
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+        CreateReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        AgentTriageDraft:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /agent/triage
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        AuthorityRouting:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /authority
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+        CheckReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/check
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        AgentTriage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/ai
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        EvidenceUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/upload
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        AttachEvidence:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/evidence
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        DispatchAuthorityEmail:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/dispatch
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        WardUpdate:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/status
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: CivicloopApiFunction
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CivicloopApiFunction}'
+      RetentionInDays: 30
+
+Outputs:
+  WebUrl:
+    Description: Civicloop mobile web app.
+    Value: !Sub 'https://${WebDistribution.DomainName}'
+  WebBucketName:
+    Description: Private S3 bucket served through CloudFront.
+    Value: !Ref WebBucket
+  WebDistributionId:
+    Value: !Ref WebDistribution
+  ApiUrl:
+    Description: HTTP API endpoint.
+    Value: !Sub 'https://${ReportsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  UserPoolId:
+    Value: !Ref UserPool
+  AppClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Value: !Sub 'https://civicloop-${AWS::AccountId}-${AWS::Region}.auth.${AWS::Region}.amazoncognito.com'
+  ReportsTableName:
+    Value: !Ref ReportsTable
+  EvidenceBucketName:
+    Value: !Ref EvidenceBucket

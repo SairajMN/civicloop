@@ -11,7 +11,6 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <link rel="stylesheet" href="styles.css">
     <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <script defer src="app.js"></script>
   </head>
   <body>
     <header class="topbar">
@@ -24,7 +23,8 @@
         <a class="nav-link" href="#reports-section">Reports <span id="report-count" class="nav-count">0</span></a>
       </nav>
       <div class="top-actions">
-        <span class="demo-pill"><span></span> Demo mode</span>
+        <span id="auth-label" class="demo-pill"><span></span> Demo mode</span>
+        <button class="button button-quiet auth-button" id="auth-button" type="button">Sign in</button>
         <button class="button button-quiet ward-button" id="ward-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17V6l7-3 7 3v11M6 17v-5h8v5M7 8h.01M10 8h.01M13 8h.01"/></svg>Ward desk</button>
         <button class="button button-primary new-report-button" type="button" data-open-report><span aria-hidden="true">+</span> Report issue</button>
         <button class="icon-button mobile-report" type="button" data-open-report aria-label="Report an issue"><span aria-hidden="true">+</span></button>
@@ -97,5 +97,8 @@
     <dialog id="ward-dialog" class="dialog ward-dialog"><div id="ward-content"></div></dialog>
     <dialog id="share-dialog" class="dialog share-dialog"><div id="share-content"></div></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script defer src="config.js"></script>
+    <script defer src="auth.js"></script>
+    <script defer src="app.js"></script>
   </body>
 </html>

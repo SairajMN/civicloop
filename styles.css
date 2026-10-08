@@ -142,6 +142,7 @@ a {
   font-weight:600;
   margin-right:5px
 }
+.auth-button { min-height:34px; padding:0 10px; font-size:11px }
 .demo-pill>span,.live-pulse {
   width:7px;
   height:7px;
@@ -1280,6 +1281,7 @@ h1 em {
 .demo-pill {
   display:none
 }
+.auth-button { min-height:32px; padding:0 8px }
 .ward-button {
   display:none
 }
