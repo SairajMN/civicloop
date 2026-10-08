@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const backendRequire = createRequire(new URL('../backend/package.json', import.meta.url));
 const { CloudFormationClient, DescribeStacksCommand } = backendRequire('@aws-sdk/client-cloudformation');
-const { CognitoIdentityProviderClient, DeleteIdentityProviderCommand } = backendRequire('@aws-sdk/client-cognito-identity-provider');
+const { CognitoIdentityProviderClient, CreateManagedLoginBrandingCommand, DeleteIdentityProviderCommand, DescribeManagedLoginBrandingByClientCommand } = backendRequire('@aws-sdk/client-cognito-identity-provider');
 
 const root = new URL('../', import.meta.url);
 const envPath = new URL('../.env', import.meta.url);
@@ -52,6 +52,13 @@ const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.Cognit
 await writeFile(new URL('../config.js', import.meta.url), `window.CIVICLOOP_CONFIG = ${JSON.stringify(publicConfig)};\n`, { mode: 0o644 });
 
 const cognito = new CognitoIdentityProviderClient({ region });
+try {
+  await cognito.send(new DescribeManagedLoginBrandingByClientCommand({ UserPoolId: outputs.UserPoolId, ClientId: outputs.AppClientId }));
+} catch (error) {
+  if (error.name !== 'ResourceNotFoundException') throw error;
+  await cognito.send(new CreateManagedLoginBrandingCommand({ UserPoolId: outputs.UserPoolId, ClientId: outputs.AppClientId, UseCognitoProvidedValues: true }));
+  console.log('Created Cognito default managed-login branding for the app client.');
+}
 try {
   await cognito.send(new DeleteIdentityProviderCommand({ UserPoolId: outputs.UserPoolId, ProviderName: 'Google' }));
   console.log('Removed the Google identity provider from Cognito.');
