@@ -111,6 +111,28 @@ async function refreshReports() {
   render();
 }
 
+async function handleAuthorityConfirmationLink() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const reportId = params.get('confirmReport');
+  const token = params.get('authorityToken');
+  if (!reportId || !token) return;
+  history.replaceState(null, '', `${location.pathname}${location.search}`);
+  try {
+    const { report } = await api(`/reports/${encodeURIComponent(reportId)}`);
+    activeCity = report.city;
+    byId('city-select').value = activeCity;
+    await refreshReports();
+    if (window.confirm(`Report ${report.id}: are you confirming that the reported issue has been fixed? Neighbors will still need to verify it.`)) {
+      const result = await api(`/reports/${encodeURIComponent(reportId)}/authority-confirm`, { method: 'POST', body: JSON.stringify({ token }) });
+      await refreshReports();
+      showToast(result.message);
+    }
+    openDetails(reportId);
+  } catch (error) {
+    showToast(error.message || 'This confirmation link could not be used.');
+  }
+}
+
 function ageLabel(createdAt) {
   const hours = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 3600000));
   if (hours < 1) return 'just now';
@@ -513,4 +535,5 @@ render();
 window.CIVICLOOP_AUTH_READY?.then(async () => {
   render();
   if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } }
+  await handleAuthorityConfirmationLink();
 });

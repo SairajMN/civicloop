@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -139,6 +139,29 @@ async function handle(event) {
   const user = claims?.sub;
   const body = event.body ? JSON.parse(event.body) : {};
 
+  const authorityConfirm = path.match(/^\/reports\/([^/]+)\/authority-confirm$/);
+  if (method === 'POST' && authorityConfirm) {
+    const id = idPart(authorityConfirm[1]);
+    const token = clean(body.token, 128);
+    if (!/^[a-f0-9]{64}$/.test(token)) return fail(400, 'This confirmation link is invalid.');
+    const digest = createHash('sha256').update(token).digest('hex');
+    const at = now();
+    try {
+      await db.send(new UpdateCommand({
+        TableName: table,
+        Key: reportKey(id),
+        UpdateExpression: 'SET #status = :claimed, authorityConfirmedAt = :at, updatedAt = :at REMOVE authorityConfirmHash, authorityConfirmExpiresAt',
+        ConditionExpression: 'authorityConfirmHash = :hash AND authorityConfirmExpiresAt > :at AND attribute_exists(pk)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':claimed': 'claimed', ':at': at, ':hash': digest },
+      }));
+      return json(200, { confirmed: true, message: 'Fix reported. Neighbors can now verify the repair.' });
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException') return fail(410, 'This link has expired or was already used.');
+      throw error;
+    }
+  }
+
   if (method === 'GET' && path === '/authority') {
     const city = clean(event.queryStringParameters?.city, 60);
     if (!user) return fail(401, 'Sign in to view report routing.');
@@ -231,15 +254,20 @@ async function handle(event) {
     if (report.authorityEmailedAt) return json(200, { sent: true, alreadySent: true, recipientLabel: report.authorityRecipientLabel || 'Configured authority' });
     const route = authorityFor(report.city, report.place);
     if (!route.canSend) return fail(400, 'Configure a verified SES sender and an authority or demo recipient first.');
+    const authorityToken = randomBytes(32).toString('hex');
+    const authorityConfirmUrl = new URL('/', process.env.APP_ORIGIN || 'https://civicloop-coral.vercel.app');
+    authorityConfirmUrl.hash = new URLSearchParams({ confirmReport: id, authorityToken }).toString();
     const subject = clean(report.emailSubject || `Civicloop report: ${report.title}`, 180).replace(/[\r\n]/g, ' ');
     const attachImage = Boolean(report.evidenceKey && attachableImageTypes.has(report.evidenceContentType) && (report.evidenceSize || 0) <= 5 * 1024 * 1024);
     const evidenceUrl = report.evidenceKey && !attachImage ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: report.evidenceKey }), { expiresIn: 86400 }) : '';
-    const text = `${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}\nCoordinates: ${report.lat}, ${report.lng}\nCategory: ${report.category}${report.evidenceKey ? attachImage ? '\nPhoto attached.' : `\nEvidence (private link, expires in 24 hours): ${evidenceUrl}` : '\nEvidence: none attached.'}\n\nDraft source: ${report.emailDraftBy === 'bedrock' ? 'Amazon Bedrock agent' : 'Civicloop template'}. Resident-submitted and not independently verified.`;
+    const text = `${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}\nCoordinates: ${report.lat}, ${report.lng}\nCategory: ${report.category}${report.evidenceKey ? attachImage ? '\nPhoto attached.' : `\nEvidence (private link, expires in 24 hours): ${evidenceUrl}` : '\nEvidence: none attached.'}\n\nAuthority action: open this single-use link to report the fix: ${authorityConfirmUrl.toString()}\nA fix report changes the status to “Fix reported · verify”; it does not close the issue. Neighbors must independently confirm the repair in Civicloop.\n\nDraft source: ${report.emailDraftBy === 'bedrock' ? 'Amazon Bedrock agent' : 'Civicloop template'}. Resident-submitted and not independently verified.`;
     const attachments = [];
     if (attachImage) {
       const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: report.evidenceKey }));
       attachments.push({ RawContent: await object.Body.transformToByteArray(), FileName: clean(report.photoName, 180).replace(/[^a-zA-Z0-9._-]/g, '_') || 'civicloop-evidence.jpg', ContentType: report.evidenceContentType, ContentDisposition: 'ATTACHMENT', ContentTransferEncoding: 'BASE64' });
     }
+    const authorityConfirmHash = createHash('sha256').update(authorityToken).digest('hex');
+    await db.send(new UpdateCommand({ TableName: table, Key: reportKey(id), UpdateExpression: 'SET authorityConfirmHash = :hash, authorityConfirmExpiresAt = :expires', ExpressionAttributeValues: { ':hash': authorityConfirmHash, ':expires': new Date(Date.now() + 30 * 86400000).toISOString() } }));
     const sent = await ses.send(new SendEmailCommand({ FromEmailAddress: process.env.SES_FROM_EMAIL, Destination: { ToAddresses: [route.email] }, Content: { Simple: { Subject: { Data: subject }, Body: { Text: { Data: text } }, ...(attachments.length ? { Attachments: attachments } : {}) } } }));
     await db.send(new UpdateCommand({ TableName: table, Key: reportKey(id), UpdateExpression: 'SET #status = :status, authorityEmailedAt = :at, authorityEmail = :to, authorityRecipientLabel = :label, authorityRecipientType = :type, authorityMessageId = :messageId', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':status': 'progress', ':at': now(), ':to': route.email, ':label': route.recipientLabel, ':type': route.testRecipient ? 'demo' : 'authority', ':messageId': sent.MessageId || '' } }));
     return json(200, { sent: true, recipientLabel: route.recipientLabel, attached: attachments.length > 0, emailDraftBy: report.emailDraftBy || 'template' });

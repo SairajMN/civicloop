@@ -328,6 +328,12 @@ Resources:
             Method: POST
             Auth:
               Authorizer: CognitoAuthorizer
+        AuthorityConfirmFix:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/authority-confirm
+            Method: POST
         WardUpdate:
           Type: HttpApi
           Properties:
