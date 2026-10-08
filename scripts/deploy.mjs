@@ -1,5 +1,11 @@
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const backendRequire = createRequire(new URL('../backend/package.json', import.meta.url));
+const { CloudFormationClient, DescribeStacksCommand } = backendRequire('@aws-sdk/client-cloudformation');
+const { CloudFrontClient, CreateInvalidationCommand } = backendRequire('@aws-sdk/client-cloudfront');
+const { PutObjectCommand, S3Client } = backendRequire('@aws-sdk/client-s3');
 
 const root = new URL('../', import.meta.url);
 const envPath = new URL('../.env', import.meta.url);
@@ -11,27 +17,30 @@ const env = Object.fromEntries(text.split(/\r?\n/).filter((line) => line.trim() 
 }));
 const region = env.AWS_REGION;
 const stack = env.STACK_NAME || 'civicloop';
+if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;
 if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION to the selected Region shown in AWS Settings > View all projects > Overview > Additional Info > Region.');
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: options.capture ? 'pipe' : 'inherit' });
+function run(command, args) {
+  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit' });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `${command} failed.`);
-  return result.stdout;
 }
 
 console.log('Building Civicloop with AWS SAM...');
 run('npm', ['install', '--prefix', 'backend', '--omit=dev']);
 run('sam', ['build', '--template-file', 'template.yaml']);
 const params = [
-  `BedrockModelId=${env.BEDROCK_MODEL_ID || ''}`,
-  `SesFromEmail=${env.SES_FROM_EMAIL || ''}`,
-  `DemoInboxEmail=${env.DEMO_INBOX_EMAIL || ''}`,
-  `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON || '{}'}`,
-];
-run('sam', ['deploy', '--stack-name', stack, '--region', region, '--capabilities', 'CAPABILITY_IAM', '--resolve-s3', '--no-confirm-changeset', '--no-fail-on-empty-changeset', '--parameter-overrides', ...params]);
+  env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
+  env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
+  env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
+  env.AUTHORITY_EMAILS_JSON && `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON}`,
+].filter(Boolean);
+const deployArgs = ['deploy', '--stack-name', stack, '--region', region, '--capabilities', 'CAPABILITY_IAM', '--resolve-s3', '--no-confirm-changeset', '--no-fail-on-empty-changeset'];
+if (params.length) deployArgs.push('--parameter-overrides', ...params);
+run('sam', deployArgs);
 
-const stacks = JSON.parse(run('aws', ['cloudformation', 'describe-stacks', '--stack-name', stack, '--region', region, '--output', 'json'], { capture: true }));
+const cloudformation = new CloudFormationClient({ region });
+const stacks = await cloudformation.send(new DescribeStacksCommand({ StackName: stack }));
 const outputs = Object.fromEntries(stacks.Stacks[0].Outputs.map(({ OutputKey, OutputValue }) => [OutputKey, OutputValue]));
 const updates = { API_BASE_URL: outputs.ApiUrl, COGNITO_USER_POOL_ID: outputs.UserPoolId, COGNITO_APP_CLIENT_ID: outputs.AppClientId, COGNITO_DOMAIN: outputs.CognitoDomain, MEDIA_BUCKET_NAME: outputs.EvidenceBucketName };
 const lines = text.split(/\r?\n/).filter((line) => !Object.keys(updates).some((key) => line.startsWith(`${key}=`)));
@@ -42,6 +51,11 @@ const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.Cognit
 await writeFile(new URL('../config.js', import.meta.url), `window.CIVICLOOP_CONFIG = ${JSON.stringify(publicConfig)};\n`, { mode: 0o644 });
 
 if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && !env.GOOGLE_OAUTH_CLIENT_ID.startsWith('your_') && !env.GOOGLE_OAUTH_CLIENT_SECRET.startsWith('replace_')) run('node', ['backend/configure-google.mjs']);
-for (const file of ['index.html', 'styles.css', 'app.js', 'auth.js', 'config.js']) run('aws', ['s3', 'cp', file, `s3://${outputs.WebBucketName}/${file}`, '--region', region]);
-run('aws', ['cloudfront', 'create-invalidation', '--distribution-id', outputs.WebDistributionId, '--paths', '/*']);
+const s3 = new S3Client({ region });
+const contentTypes = { 'index.html': 'text/html; charset=utf-8', 'styles.css': 'text/css; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'auth.js': 'text/javascript; charset=utf-8', 'config.js': 'text/javascript; charset=utf-8' };
+for (const [file, contentType] of Object.entries(contentTypes)) {
+  await s3.send(new PutObjectCommand({ Bucket: outputs.WebBucketName, Key: file, Body: await readFile(new URL(`../${file}`, import.meta.url)), ContentType: contentType }));
+}
+const cloudfront = new CloudFrontClient({ region: 'us-east-1' });
+await cloudfront.send(new CreateInvalidationCommand({ DistributionId: outputs.WebDistributionId, InvalidationBatch: { CallerReference: `civicloop-${Date.now()}`, Paths: { Quantity: 1, Items: ['/*'] } } }));
 console.log(`Civicloop is deployed at ${outputs.WebUrl}`);

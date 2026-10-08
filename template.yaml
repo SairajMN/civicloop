@@ -286,16 +286,12 @@ Resources:
             ApiId: !Ref ReportsApi
             Path: /reports
             Method: GET
-            Auth:
-              Authorizer: NONE
         GetReport:
           Type: HttpApi
           Properties:
             ApiId: !Ref ReportsApi
             Path: /reports/{id}
             Method: GET
-            Auth:
-              Authorizer: NONE
         GetEvidence:
           Type: HttpApi
           Properties:
