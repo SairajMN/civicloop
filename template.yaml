@@ -17,7 +17,11 @@ Parameters:
   SesFromEmail:
     Type: String
     Default: ''
-    Description: Optional verified SES sender address for human-triggered ward email.
+    Description: Sender address used by Yahoo SMTP or SES for human-triggered ward email.
+  YahooSmtpSecretId:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager secret ID with JSON keys username and appPassword for Yahoo SMTP.
   DemoInboxEmail:
     Type: String
     Default: ''
@@ -43,12 +47,15 @@ Globals:
         EVIDENCE_BUCKET: !Ref EvidenceBucket
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         SES_FROM_EMAIL: !Ref SesFromEmail
+        YAHOO_SMTP_USER: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:username}}', '']
+        YAHOO_SMTP_APP_PASSWORD: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:appPassword}}', '']
         DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
         AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
         APP_ORIGIN: !Ref SiteOrigin
 
 Conditions:
   HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
+  HasYahooSmtpSecret: !Not [!Equals [!Ref YahooSmtpSecretId, '']]
 
 Resources:
   UserPool:
@@ -356,7 +363,6 @@ Resources:
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
-    DependsOn: CivicloopApiFunction
     Properties:
       LogGroupName: !Sub '/aws/lambda/${CivicloopApiFunction}'
       RetentionInDays: 30

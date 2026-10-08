@@ -12,7 +12,7 @@ Civicloop is a mobile-first neighborhood reporting app for environmental and pub
 - Bedrock Triage Agent with read-only tools for nearby-report matching and configured area/department lookup. It drafts the summary and authority email; if Bedrock is unavailable, the app identifies and uses a factual template instead.
 - Bedrock Follow-up Agent that drafts a neutral update only after a report is unresolved for 24 hours. The app requires a person to review and share it.
 - WardDesk Cognito group for authority status updates. A signed-in reporter can also send their own report after reviewing the recipient and message.
-- SES report dispatch with JPEG/PNG/WebP attachments up to 5 MB. Video and larger evidence use a private link that expires after 24 hours.
+- Report dispatch through Yahoo SMTP (when configured) or SES, with JPEG/PNG/WebP attachments up to 5 MB. Video and larger evidence use a private link that expires after 24 hours.
 - CloudFront-hosted web assets and 30-day Lambda log retention.
 
 ## Run the local demo
@@ -35,7 +35,7 @@ Requirements: Node.js 22+, AWS CLI authenticated with your AWS profile/SSO, and 
 
 1. Copy `.env.example` to `.env` and set `AWS_REGION` to your selected Region.
 2. Set `BEDROCK_MODEL_ID` to a direct model ID enabled for your project in that Region. If inference is unavailable, the app uses a clearly labeled factual template. Bedrock access is optional for deployment.
-3. Verify `SES_FROM_EMAIL` in SES. Set `DEMO_INBOX_EMAIL` to a verified test recipient first. Configure `AUTHORITY_EMAILS_JSON` only with current, confirmed authority contacts; you can route by city or exact landmark/area. Example: `AUTHORITY_EMAILS_JSON='{"Bengaluru":{"department":"BBMP","areas":{"Mahadevapura":{"department":"BBMP Mahadevapura zone","email":"verified-contact@example.org"}}}}'`.
+3. Set `SES_FROM_EMAIL` to `civicloop@yahoo.com` and `DEMO_INBOX_EMAIL` to a test recipient. To send through Yahoo, [create a Yahoo app password](https://help.yahoo.com/kb/technical-support/generate-password-access-yahoo-mail-sln15241.html), then create an AWS Secrets Manager secret named `civicloop/yahoo-smtp` with this SecretString JSON: `{"username":"civicloop@yahoo.com","appPassword":"<Yahoo app password>"}`. Set `YAHOO_SMTP_SECRET_ID=civicloop/yahoo-smtp`; the app password stays in Secrets Manager and is resolved into the Lambda environment during deployment. Yahoo's authenticated SMTP path is preferred for a Yahoo From address. If the secret ID is blank, the app uses SES, which requires authenticated sender-domain setup for reliable Gmail delivery. Configure `AUTHORITY_EMAILS_JSON` only with current, confirmed authority contacts; you can route by city or exact landmark/area. Example: `AUTHORITY_EMAILS_JSON='{"Bengaluru":{"department":"BBMP","areas":{"Mahadevapura":{"department":"BBMP Mahadevapura zone","email":"verified-contact@example.org"}}}}'`.
 4. Run `node scripts/deploy.mjs`. If you use a named AWS profile, run `AWS_PROFILE=sai node scripts/deploy.mjs` (replace `sai` with your profile name). This creates or updates the AWS stack, writes the Cognito domain and public IDs to `.env` and `config.js`, and removes any Google identity provider from the Cognito user pool.
 5. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk; reporters can send only their own reports after reviewing the recipient and email.
 

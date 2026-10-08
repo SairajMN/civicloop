@@ -1,4 +1,6 @@
 import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
@@ -30,7 +32,7 @@ if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
 
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit' });
+  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit', env: { ...process.env, npm_config_cache: process.env.npm_config_cache || join(tmpdir(), 'civicloop-npm-cache') } });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `${command} failed.`);
 }
 
@@ -41,6 +43,7 @@ const params = [
   `SiteOrigin=${siteOrigin}`,
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
+  env.YAHOO_SMTP_SECRET_ID && `YahooSmtpSecretId=${env.YAHOO_SMTP_SECRET_ID}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
   authorityEmails.size && `SesRecipientAddresses=${[...authorityEmails].join(',')}`,
   env.AUTHORITY_EMAILS_JSON && `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON}`,

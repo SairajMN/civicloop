@@ -11,6 +11,7 @@
     "@aws-sdk/client-sesv2": "^3.900.0",
     "@aws-sdk/lib-dynamodb": "^3.900.0",
     "@aws-sdk/s3-request-presigner": "^3.900.0",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "nodemailer": "^10.0.16"
   }
 }
