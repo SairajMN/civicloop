@@ -1,1 +1,1 @@
-window.CIVICLOOP_CONFIG = {"apiBaseUrl":"https://asqdvzk1r1.execute-api.ap-south-1.amazonaws.com","cognitoDomain":"https://civicloop-299858989811-ap-south-1.auth.ap-south-1.amazoncognito.com","cognitoClientId":"kdt1qnecatfhs0llfagel6q51"};
+window.CIVICLOOP_CONFIG = {"apiBaseUrl":"https://asqdvzk1r1.execute-api.ap-south-1.amazonaws.com","cognitoDomain":"https://civicloop-299858989811-ap-south-1.auth.ap-south-1.amazoncognito.com","cognitoClientId":"kdt1qnecatfhs0llfagel6q51","instagramEnabled":false};

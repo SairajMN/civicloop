@@ -8,6 +8,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import nodemailer from 'nodemailer';
 import { imageGps, videoMetadata } from './media-metadata.mjs';
 import { findBengaluruWard } from './ward-lookup.mjs';
+import { instagramCredentials, publishInstagram } from './instagram.mjs';
 
 const region = process.env.AWS_REGION;
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
@@ -108,8 +109,8 @@ async function listReports(city) {
 }
 
 function publicReport(item) {
-  const { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceFiles, authorityProofKey } = item;
-  return { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceCount: evidenceFiles?.length || (item.evidenceKey ? 1 : 0), hasAuthorityProof: Boolean(authorityProofKey) };
+  const { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceFiles, authorityProofKey, allowInstagram, instagramStatus, instagramPermalink } = item;
+  return { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceCount: evidenceFiles?.length || (item.evidenceKey ? 1 : 0), hasAuthorityProof: Boolean(authorityProofKey), allowInstagram: Boolean(allowInstagram), instagramStatus, instagramPermalink };
 }
 
 async function getReport(id) {
@@ -260,7 +261,50 @@ async function runReminders() {
     await db.send(new UpdateCommand({ TableName: table, Key: reportKey(report.id), UpdateExpression: 'SET reminderSentAt = :at REMOVE reminderDueAt', ConditionExpression: 'reminderDueAt = :due', ExpressionAttributeValues: { ':at': now(), ':due': report.reminderDueAt } }));
     sentCount += 1;
   }
-  return { sentCount };
+  return { sentCount, instagram: await runInstagramEscalations() };
+}
+
+async function runInstagramEscalations() {
+  if (!process.env.INSTAGRAM_SECRET_ID) return { published: 0, configured: false };
+  const due = await db.send(new ScanCommand({
+    TableName: table,
+    FilterExpression: 'allowInstagram = :yes AND instagramDueAt <= :at AND attribute_not_exists(instagramStatus) AND (#status = :open OR #status = :progress)',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: { ':yes': true, ':at': now(), ':open': 'open', ':progress': 'progress' },
+    Limit: 100,
+  }));
+  let published = 0;
+  for (const candidate of due.Items || []) {
+    const check = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', FilterExpression: '#kind = :still', ExpressionAttributeNames: { '#kind': 'kind' }, ExpressionAttributeValues: { ':pk': `REPORT#${candidate.id}`, ':prefix': 'CHECK#', ':still': 'still' }, Limit: 100 }));
+    if (!check.Items?.some((item) => item.sk !== `CHECK#${candidate.ownerSub}` && item.createdAt >= candidate.instagramDueAt)) continue;
+    const file = (candidate.evidenceFiles || []).find((item) => ['image/jpeg', 'image/png', 'video/mp4'].includes(item.contentType));
+    if (!file) continue;
+    try {
+      await db.send(new UpdateCommand({ TableName: table, Key: reportKey(candidate.id), UpdateExpression: 'SET instagramStatus = :publishing', ConditionExpression: 'attribute_not_exists(instagramStatus) AND allowInstagram = :yes AND (#status = :open OR #status = :progress)', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':publishing': 'publishing', ':yes': true, ':open': 'open', ':progress': 'progress' } }));
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException') continue;
+      throw error;
+    }
+    try {
+      const latest = await getReport(candidate.id);
+      if (!['open', 'progress'].includes(latest?.status)) {
+        await db.send(new UpdateCommand({ TableName: table, Key: reportKey(candidate.id), UpdateExpression: 'SET instagramStatus = :cancelled', ExpressionAttributeValues: { ':cancelled': 'cancelled' } }));
+        continue;
+      }
+      const credentials = await instagramCredentials();
+      const mediaUrl = await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: file.key }), { expiresIn: 3600 });
+      const handle = clean(authorityMap()[candidate.city]?.socialHandle, 80);
+      const mention = /^@[a-zA-Z0-9_.]+$/.test(handle) ? ` ${handle}` : '';
+      const caption = `Community follow-up: ${clean(candidate.title, 100)}. A resident reported this issue near ${clean(candidate.place || candidate.city, 120)}, ${clean(candidate.city, 60)}. At least one neighbor checked and said it was still present. Please inspect the site and share a repair update. Report ${candidate.id}.${mention}`.slice(0, 2200);
+      const media = await publishInstagram({ ...credentials, mediaUrl, isVideo: file.contentType === 'video/mp4', caption });
+      await db.send(new UpdateCommand({ TableName: table, Key: reportKey(candidate.id), UpdateExpression: 'SET instagramStatus = :published, instagramMediaId = :mediaId, instagramPermalink = :permalink, instagramPublishedAt = :at', ExpressionAttributeValues: { ':published': 'published', ':mediaId': media.id, ':permalink': media.permalink, ':at': now() } }));
+      published++;
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'instagram-publish-failed', reportId: candidate.id, message: error.message }));
+      await db.send(new UpdateCommand({ TableName: table, Key: reportKey(candidate.id), UpdateExpression: 'SET instagramStatus = :failed, instagramFailedAt = :at', ExpressionAttributeValues: { ':failed': 'failed', ':at': now() } }));
+    }
+  }
+  return { published, configured: true };
 }
 
 async function handle(event) {
@@ -406,7 +450,8 @@ async function handle(event) {
     const input = { city: clean(draft.city, 60), place: clean(draft.place, 120) || 'Pinned location', category: clean(body.category || draft.category, 80), title: clean(body.title || draft.title, 100), details: clean(body.details || draft.details, 800), summary: clean(body.summary || draft.summary, 800), lat: Number(draft.lat), lng: Number(draft.lng) };
     if (!input.city || !input.category || !input.title || !input.details || !pointIsValid(input.lat, input.lng)) return fail(400, 'Review the issue details and confirm a valid location.');
     const triage = await runTriageAgent({ ...draft, ...input });
-    const report = { ...draft, ...input, id: draftId, status: 'open', updatedAt: now(), checks: 0, fixChecks: 0, urgency: clean(triage.urgency, 20), emailSubject: clean(triage.emailSubject, 160), emailBody: clean(triage.emailBody, 3000), emailDraftBy: triage.emailDraftBy || 'template' };
+    const allowInstagram = body.allowInstagram === true && Boolean(process.env.INSTAGRAM_SECRET_ID);
+    const report = { ...draft, ...input, id: draftId, status: 'open', updatedAt: now(), checks: 0, fixChecks: 0, urgency: clean(triage.urgency, 20), emailSubject: clean(triage.emailSubject, 160), emailBody: clean(triage.emailBody, 3000), emailDraftBy: triage.emailDraftBy || 'template', ...(allowInstagram ? { allowInstagram: true, instagramDueAt: new Date(Date.now() + 7 * 86400000).toISOString() } : {}) };
     delete report.expiresAt;
     const quotaKey = { pk: `QUOTA#${user}#${dailyQuotaDate()}`, sk: 'REPORTS' };
     const videoCount = (report.evidenceFiles || []).some((file) => file.contentType?.startsWith('video/')) ? 1 : 0;
@@ -439,12 +484,23 @@ async function handle(event) {
     return json(201, { report: { ...report, ownerSub: undefined }, triage });
   }
 
-  const match = path.match(/^\/reports\/([^/]+)(?:\/(check|ai|upload|evidence|fix-evidence|dispatch|status))?$/);
+  const match = path.match(/^\/reports\/([^/]+)(?:\/(check|ai|upload|evidence|fix-evidence|dispatch|status|instagram-opt-out))?$/);
   if (!match) return fail(404, 'Route not found.');
   const id = idPart(match[1]);
   const action = match[2];
   const report = await getReport(id);
   if (!report) return fail(404, 'Report not found.');
+
+  if (method === 'POST' && action === 'instagram-opt-out') {
+    if (report.ownerSub !== user) return fail(403, 'Only the reporter can cancel Instagram escalation.');
+    try {
+      await db.send(new UpdateCommand({ TableName: table, Key: reportKey(id), UpdateExpression: 'SET allowInstagram = :no REMOVE instagramDueAt', ConditionExpression: 'allowInstagram = :yes AND attribute_not_exists(instagramStatus)', ExpressionAttributeValues: { ':no': false, ':yes': true } }));
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException') return fail(409, 'This report is no longer waiting for Instagram escalation.');
+      throw error;
+    }
+    return json(200, { report: publicReport(await getReport(id)) });
+  }
 
   if (method === 'POST' && action === 'check') {
     const kind = clean(body.kind, 20);

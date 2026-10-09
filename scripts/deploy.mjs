@@ -45,6 +45,7 @@ const params = [
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
   env.YAHOO_SMTP_SECRET_ID && `YahooSmtpSecretId=${env.YAHOO_SMTP_SECRET_ID}`,
+  env.INSTAGRAM_SECRET_ID && `InstagramSecretId=${env.INSTAGRAM_SECRET_ID}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
   authorityEmails.size && `SesRecipientAddresses=${[...authorityEmails].join(',')}`,
   env.AUTHORITY_EMAILS_JSON && `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON}`,
@@ -61,7 +62,7 @@ const lines = text.split(/\r?\n/).filter((line) => !Object.keys(updates).some((k
 lines.push(...Object.entries(updates).map(([key, value]) => `${key}=${value}`));
 await writeFile(envPath, `${lines.join('\n')}\n`, { mode: 0o600 });
 await chmod(envPath, 0o600);
-const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.CognitoDomain, cognitoClientId: outputs.AppClientId };
+const publicConfig = { apiBaseUrl: outputs.ApiUrl, cognitoDomain: outputs.CognitoDomain, cognitoClientId: outputs.AppClientId, instagramEnabled: Boolean(env.INSTAGRAM_SECRET_ID) };
 await writeFile(new URL('../config.js', import.meta.url), `window.CIVICLOOP_CONFIG = ${JSON.stringify(publicConfig)};\n`, { mode: 0o644 });
 
 const cognito = new CognitoIdentityProviderClient({ region });

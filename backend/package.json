@@ -8,6 +8,7 @@
     "@aws-sdk/client-cognito-identity-provider": "^3.900.0",
     "@aws-sdk/client-dynamodb": "^3.900.0",
     "@aws-sdk/client-s3": "^3.900.0",
+    "@aws-sdk/client-secrets-manager": "^3.1148.0",
     "@aws-sdk/client-sesv2": "^3.900.0",
     "@aws-sdk/lib-dynamodb": "^3.900.0",
     "@aws-sdk/s3-request-presigner": "^3.900.0",

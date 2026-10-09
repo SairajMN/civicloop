@@ -22,6 +22,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional Secrets Manager secret ID with JSON keys username and appPassword for Yahoo SMTP.
+  InstagramSecretId:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager secret name with Instagram userId, long-lived accessToken and expiresAt.
   DemoInboxEmail:
     Type: String
     Default: ''
@@ -49,6 +53,7 @@ Globals:
         SES_FROM_EMAIL: !Ref SesFromEmail
         YAHOO_SMTP_USER: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:username}}', '']
         YAHOO_SMTP_APP_PASSWORD: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:appPassword}}', '']
+        INSTAGRAM_SECRET_ID: !Ref InstagramSecretId
         DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
         AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
         APP_ORIGIN: !Ref SiteOrigin
@@ -56,6 +61,7 @@ Globals:
 Conditions:
   HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
   HasYahooSmtpSecret: !Not [!Equals [!Ref YahooSmtpSecretId, '']]
+  HasInstagramSecret: !Not [!Equals [!Ref InstagramSecretId, '']]
 
 Resources:
   UserPool:
@@ -252,6 +258,12 @@ Resources:
               Action: [bedrock:InvokeModel]
               Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
             - !If
+              - HasInstagramSecret
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:PutSecretValue]
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${InstagramSecretId}-*'
+              - !Ref AWS::NoValue
+            - !If
               - HasSesSender
               - Effect: Allow
                 Action: [ses:SendEmail]
@@ -398,8 +410,16 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: rate(1 hour)
-            Description: Check hourly for unresolved authority reports past their three-day reminder time.
+            Description: Check hourly for three-day authority reminders and consented seven-day Instagram follow-ups.
             Enabled: true
+        CancelInstagramEscalation:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/instagram-opt-out
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup

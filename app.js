@@ -283,6 +283,7 @@ function openDetails(id) {
     <p class="detail-location">⌖ ${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)} · approximate report location${report.wardNumber ? `<br>Ward ${esc(report.wardNumber)} · ${esc(report.wardName)} · ${esc(report.corporation || '')}` : ''}</p>
     ${report.photoName ? `<p class="detail-location">▧ Evidence ${cloudMode ? 'uploaded privately' : 'selected'}: ${esc(report.photoName)} <span class="draft-row">${cloudMode ? 'Evidence is available through signed links.' : 'Session preview only; media is not uploaded or saved.'}</span>${cloudMode ? `<button class="text-button" type="button" data-evidence="${esc(report.id)}">View evidence</button><span class="evidence-links" data-evidence-links="${esc(report.id)}"></span>` : ''}</p>` : ''}
     ${report.hasAuthorityProof && cloudMode ? `<p class="detail-location">▧ Authority fix photo <button class="text-button" type="button" data-fix-evidence="${esc(report.id)}">View repair evidence</button><span class="evidence-links" data-fix-evidence-link="${esc(report.id)}"></span></p>` : ''}
+    ${report.instagramStatus === 'published' ? `<p class="detail-location">Instagram follow-up published.${report.instagramPermalink?.startsWith('https://www.instagram.com/') ? ` <a href="${esc(report.instagramPermalink)}" target="_blank" rel="noopener">View post</a>` : ''}</p>` : report.allowInstagram && !report.instagramStatus ? `<p class="detail-location">Public Instagram follow-up is scheduled only if this remains unresolved after 7 days and a neighbor confirms it. <button class="text-button" type="button" data-instagram-opt-out="${esc(report.id)}">Cancel public follow-up</button></p>` : ''}
     <div class="detail-counts"><span><strong>${Number(report.checks) || 0}</strong> community checks</span><span><strong>${Number(report.fixChecks) || 0}</strong> fix confirmations</span></div>
     <div class="checkin-box"><strong>Passing by? Add a quick check</strong><p>Your check updates this report; it won't create a duplicate ticket.</p><div class="checkin-actions"><button class="button button-outline" type="button" data-check="still">Still there</button><button class="button button-outline" type="button" data-check="fixed">Looks fixed</button><button class="button button-quiet" type="button" data-check="unsure">Can't verify</button></div></div>
     <div class="detail-actions"><button class="button button-quiet share-trigger" type="button">Share update</button><button class="button button-primary" type="button" data-close-detail>Done</button></div>`;
@@ -445,6 +446,10 @@ async function videoPreviewFrames(file) {
 
 function showReportReview(inspected, version) {
   const { draft, location: place } = inspected;
+  const instagramReady = Boolean(window.CIVICLOOP_CONFIG?.instagramEnabled);
+  const supportedEvidence = Array.from(byId('issue-photo').files).some((file) => ['image/jpeg', 'image/png', 'video/mp4'].includes(file.type));
+  byId('allow-instagram').disabled = !instagramReady || !supportedEvidence;
+  byId('instagram-help').textContent = !instagramReady ? 'Instagram publishing will be available after Civicloop connects its professional account.' : !supportedEvidence ? 'Automatic posting requires a JPEG/PNG photo or MP4 video.' : 'If this issue remains unresolved after 7 days and someone confirms it is still there, Civicloop may automatically post one photo or video and a factual caption to its professional Instagram account. Anyone may see and reshare it. Only choose this if the evidence contains no faces, license plates, or private details.';
   byId('issue-category').value = draft.category;
   byId('issue-title').value = draft.title;
   byId('issue-details').value = draft.details;
@@ -538,7 +543,7 @@ async function createReport(event) {
     const title = byId('issue-title').value.trim();
     const details = byId('issue-details').value.trim();
     if (!category || !title || !details) throw new Error('The AI draft is incomplete. Use different evidence and try again.');
-    const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim() }) });
+    const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim(), allowInstagram: byId('allow-instagram').checked }) });
     const report = result.report;
     reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
     let note = '';
@@ -736,6 +741,10 @@ byId('detail-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-detail, [data-close-detail]')) byId('detail-dialog').close();
   const check = event.target.closest('[data-check]'); if (check) applyCheck(check.dataset.check);
   if (event.target.closest('.share-trigger')) showShareDialog();
+  const optOut = event.target.closest('[data-instagram-opt-out]'); if (optOut) {
+    if (!requireSignIn()) return;
+    api(`/reports/${encodeURIComponent(optOut.dataset.instagramOptOut)}/instagram-opt-out`, { method: 'POST' }).then(async () => { await refreshReports(); openDetails(optOut.dataset.instagramOptOut); showToast('Public Instagram follow-up cancelled.'); }).catch((error) => showToast(error.message));
+  }
   const evidence = event.target.closest('[data-evidence]'); if (evidence) api(`/reports/${encodeURIComponent(evidence.dataset.evidence)}/evidence`).then(({ files }) => {
     const list = byId('detail-content').querySelector(`[data-evidence-links="${CSS.escape(evidence.dataset.evidence)}"]`);
     if (list) list.innerHTML = files.map((file, index) => `<a href="${esc(file.url)}" target="_blank" rel="noopener">Open ${esc(file.fileName || `evidence ${index + 1}`)}</a>`).join(' · ');
