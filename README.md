@@ -5,11 +5,11 @@ Civicloop is a mobile-first neighborhood reporting app for environmental and pub
 ## Included
 
 - Responsive map and report feed for Bengaluru and Delhi, with a local-only demo mode.
-- Reports can be pinned anywhere on the map. Bengaluru and Delhi are prefilled; for other places, enter the city or municipality so the report is grouped and routed correctly.
+- Reports can cover any location when the evidence has usable GPS metadata. Otherwise, the app uses the location the resident enables during capture. Bengaluru and Delhi are prefilled; other locations are grouped under Other.
 - Shared reports through API Gateway, Lambda, and DynamoDB.
 - Cognito email/password sign-in using the hosted login page and OAuth authorization code with PKCE. New accounts are confirmed without sending an email; email addresses remain unverified.
 - Private S3 evidence uploads using short-lived signed URLs. Each report can include up to four photos or one video (25 MB per file); videos must be 15 seconds or shorter. Unsubmitted evidence expires after a day; submitted evidence expires after one year.
-- Bedrock Vision Agent suggests the issue category, title, details, and summary from compressed image previews. It samples up to three frames from a video because this flow sends images, not a native video input. Residents review and can edit every suggestion.
+- Bedrock Vision Agent fills the issue category, title, details, and summary from compressed image previews. It samples up to three frames from a video because this flow sends images, not a native video input. Residents see capture, analysis, and read-only review steps before creating the report; if vision is unavailable, the app labels its cautious template draft.
 - Image EXIF and common QuickTime GPS metadata take priority over the phone's live GPS. If evidence has no usable GPS, the report uses the live location; Bengaluru points are matched against the final 369 GBA ward polygons and five city corporations.
 - The authenticated account can submit up to five reports per India-local day, including at most one video report.
 - Bedrock Triage Agent drafts the authority email; if Bedrock is unavailable, the app identifies and uses a factual template instead.
@@ -28,7 +28,7 @@ Open `index.html`, or serve the project so browser location and OAuth callbacks 
 python3 -m http.server 8080
 ```
 
-Visit `http://localhost:8080`. With the empty `config.js`, reports stay in that browser and the draft helper is a local template. No credentials are needed for this mode.
+Visit `http://localhost:8080`. With an empty `config.js`, the map and sample reports are available locally. AI report creation needs the deployed AWS backend and sign-in.
 
 ## Deploy to AWS
 

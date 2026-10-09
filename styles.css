@@ -1033,6 +1033,43 @@ h1 em {
   background:#fff;
   cursor:pointer
 }
+.report-dialog [hidden] { display:none!important }
+.report-dialog .upload-location-row { gap:12px; margin-top:22px }
+.report-dialog .upload-box,.report-dialog .location-box {
+  min-height:92px;
+  padding:16px;
+  gap:12px;
+  border-radius:12px
+}
+.report-dialog .upload-box>svg,.report-dialog .location-box>svg { width:25px; height:25px }
+.report-dialog .upload-box strong,.report-dialog .location-box strong { font-size:12px }
+.report-dialog .upload-box small,.report-dialog .location-box small { font-size:10px; line-height:1.4; white-space:normal }
+.report-dialog .upload-box:focus-within,.report-dialog .location-box:focus-visible { outline:2px solid #59916a; outline-offset:2px }
+.capture-hint { margin-top:14px; color:#718077; font-size:11px; line-height:1.5 }
+.report-workflow { padding:10px 0 8px }
+.workflow-heading { font:700 15px Manrope,sans-serif; color:var(--ink); margin:6px 0 18px }
+.workflow-list { list-style:none; margin:0; padding:0 0 0 13px; border-left:2px solid #dfe9e0 }
+.workflow-step { position:relative; padding:0 0 22px 19px; color:#95a199; font-size:11px; line-height:1.45; transition:color .25s }
+.workflow-step:last-child { padding-bottom:3px }
+.workflow-step::before { content:''; position:absolute; width:12px; height:12px; top:1px; left:-20px; border-radius:50%; background:#fff; border:2px solid #dce6dd }
+.workflow-step.is-complete { color:#548364 }
+.workflow-step.is-complete::before { content:'✓'; display:grid; place-items:center; color:#fff; background:#5a956b; border-color:#5a956b; font-size:8px; font-weight:700 }
+.workflow-step.is-active { color:var(--ink); font-weight:700 }
+.workflow-step.is-active::before { border-color:#5a956b; box-shadow:0 0 0 4px #e4f0e6; animation:workflow-pulse 1.2s ease-in-out infinite }
+@keyframes workflow-pulse { 50% { box-shadow:0 0 0 8px #e4f0e600 } }
+.review-heading { margin:19px 0 14px }
+.review-heading h3 { margin:5px 0 6px; font:700 17px Manrope,sans-serif; color:var(--ink) }
+.review-heading p { font-size:10px; color:#718077; line-height:1.55 }
+.draft-fields { display:grid; gap:8px; margin:0 }
+.draft-field { border:1px solid #e4ebe4; background:#fafcf9; border-radius:9px; padding:11px 12px; animation:draft-appear .36s both; animation-delay:calc(var(--field-order) * 110ms) }
+.draft-field dt { color:#76867a; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.08em }
+.draft-field dd { margin:5px 0 0; color:#34443a; font-size:11px; line-height:1.5; overflow-wrap:anywhere }
+@keyframes draft-appear { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }
+.restart-report { display:block; margin:12px 0 0; border:0; padding:4px 0; background:none; color:#457b55; font:700 10px Manrope,sans-serif; cursor:pointer }
+.restart-report:hover { text-decoration:underline }
+@media (prefers-reduced-motion:reduce) {
+  .workflow-step.is-active::before,.draft-field { animation:none }
+}
 .privacy-note {
   display:flex;
   align-items:flex-start;

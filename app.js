@@ -39,6 +39,10 @@ let currentLocation = null;
 let selectedReportId = null;
 let photoPreviewUrls = [];
 let pendingDraftId = null;
+let reportLocationReady = false;
+let reportPhase = 'capture';
+let reportVersion = 0;
+let reviewRevealTimer;
 let authorityLinkContext = null;
 let locationWatchId = null;
 let lastNearbyRefreshAt = 0;
@@ -54,6 +58,30 @@ const demoClientId = localStorage.getItem(DEMO_CLIENT_KEY) || (() => {
 const byId = (id) => document.getElementById(id);
 const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const statusLabels = { open: 'Needs a check', progress: 'Sent to area desk', claimed: 'Fix reported · verify', verified: 'Community verified' };
+
+function updateCaptureReady() {
+  const hasEvidence = Boolean(byId('issue-photo').files.length);
+  const ready = hasEvidence && reportLocationReady;
+  byId('analyze-report-button').hidden = reportPhase !== 'capture' || !ready;
+  byId('capture-hint').textContent = ready ? 'Evidence and location are ready. Civicloop can analyze the issue now.' : hasEvidence ? 'Now enable your location to continue.' : reportLocationReady ? 'Now add a photo or short video to continue.' : 'Add evidence and enable location to continue.';
+}
+
+function setReportPhase(phase) {
+  reportPhase = phase;
+  byId('report-capture').hidden = phase !== 'capture';
+  byId('report-workflow').hidden = phase !== 'workflow';
+  byId('report-review').hidden = phase !== 'review';
+  byId('submit-report-button').hidden = true;
+  byId('report-form').setAttribute('aria-busy', phase === 'workflow' ? 'true' : 'false');
+  updateCaptureReady();
+}
+
+function setWorkflowStep(active) {
+  document.querySelectorAll('.workflow-step').forEach((step, index) => {
+    step.classList.toggle('is-complete', index < active);
+    step.classList.toggle('is-active', index === active);
+  });
+}
 
 function loadReports() {
   try {
@@ -106,7 +134,6 @@ function render() {
   byId('auth-button').hidden = !cloudMode;
   byId('ward-button').hidden = cloudMode && !window.CivicAuth.isWard();
   byId('share-authority').disabled = !cloudMode;
-  byId('draft-note').textContent = cloudMode ? 'Bedrock Vision Agent can suggest fields from your evidence' : 'Local demo only · AI review needs AWS';
 }
 
 async function refreshReports() {
@@ -287,7 +314,7 @@ async function applyCheck(kind) {
   showToast(kind === 'still' ? previous ? 'Your check-in was updated.' : 'Added to this report. Thanks for checking in.' : report.status === 'verified' ? 'Community verification complete.' : previous ? 'Your check-in was updated.' : 'Fix noted. One more neighbor check can verify it.');
 }
 
-function locateUser({ notify = false } = {}) {
+function locateUser({ notify = false, forReport = false } = {}) {
   if (!navigator.geolocation) { showToast('Location is not available in this browser.'); return; }
   showToast('Finding your location…');
   navigator.geolocation.getCurrentPosition(async (position) => {
@@ -296,9 +323,11 @@ function locateUser({ notify = false } = {}) {
     const city = nearest && distanceKm(lat, lng, ...nearest[1].center) < 60 ? nearest[0] : 'Other';
     const changedCity = city !== activeCity;
     currentLocation = { lat, lng, city };
+    if (forReport) reportLocationReady = true;
     if (changedCity) { activeCity = city; byId('city-select').value = city; }
     if (map) map.setView([lat, lng], 14);
     updateLocationLabel();
+    if (forReport) updateCaptureReady();
     if (changedCity && cloudMode) { try { await refreshReports(); } catch (error) { render(); showToast(error.message); } }
     else render();
     if (byId('issue-city').value === 'Other') byId('issue-city').value = '';
@@ -308,7 +337,10 @@ function locateUser({ notify = false } = {}) {
       showToast(`${close.length} open report${close.length === 1 ? '' : 's'} within 1.5 km. Tap a pin or card to check.`);
     } else showToast('No open reports found within 1.5 km.');
     if (notify) notifyPassingReports(lat, lng);
-  }, () => showToast('Location permission was unavailable. You can still browse the map.'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  }, () => {
+    if (forReport) { reportLocationReady = false; updateCaptureReady(); }
+    showToast(forReport ? 'Location permission was unavailable. Enable it to analyze this report.' : 'Location permission was unavailable. You can still browse the map.');
+  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
 }
 
 function updateLocationLabel() {
@@ -411,134 +443,128 @@ async function videoPreviewFrames(file) {
   }
 }
 
-async function draftSummary() {
-  const category = byId('issue-category').value || 'Environmental issue';
-  const title = byId('issue-title').value.trim();
-  const details = byId('issue-details').value.trim();
-  if (!title && !details) { showToast('Add a title or a few details first.'); return; }
-  if (cloudMode) {
-    if (!requireSignIn()) return;
-    const city = byId('issue-city').value.trim();
-    if (!currentLocation) { showToast('Set a map pin or use your location before asking the agent.'); return; }
-    if (!city) { showToast('Add the city or municipality for this location.'); return; }
-    try {
-      const { draft } = await api('/agent/triage', { method: 'POST', body: JSON.stringify({ city, place: byId('issue-place').value.trim(), category, title: title || details.slice(0, 72), details, lat: currentLocation.lat, lng: currentLocation.lng }) });
-      byId('issue-summary').value = draft.summary || `${category}: ${title || details}`;
-      byId('draft-note').textContent = draft.emailDraftBy === 'bedrock' ? 'Bedrock drafted the summary and authority email' : 'Bedrock unavailable · using a clear report template';
-      const matches = (draft.duplicateCandidates || []).slice(0, 2).map((item) => `${item.id}: ${item.title}`).join('; ');
-      showToast(matches ? `Draft ready. Possible nearby reports: ${matches}` : `${draft.department || 'Triage'} draft ready. Review before submitting.`);
-    } catch (error) { showToast(error.message); }
-    return;
+function showReportReview(inspected, version) {
+  const { draft, location: place } = inspected;
+  byId('issue-category').value = draft.category;
+  byId('issue-title').value = draft.title;
+  byId('issue-details').value = draft.details;
+  byId('issue-summary').value = draft.summary;
+  byId('issue-city').value = place.city;
+  byId('issue-place').value = place.place;
+  currentLocation = { lat: place.lat, lng: place.lng, city: place.city };
+  activeCity = place.city;
+  rememberCity(place.city, [place.lat, place.lng]);
+  byId('city-select').value = place.city;
+  updateLocationLabel();
+  const ward = place.ward ? `Ward ${place.ward.number} · ${place.ward.name} · ${place.ward.corporation}` : `${place.lat.toFixed(4)}, ${place.lng.toFixed(4)}`;
+  const fields = [
+    ['Issue type', draft.category],
+    ['Title', draft.title],
+    ['What Civicloop saw', draft.details],
+    ['Location', `${place.place}, ${place.city} · ${ward}`],
+    ['Report summary', draft.summary],
+  ];
+  byId('draft-fields').innerHTML = fields.map(([label, value], index) => `<div class="draft-field" style="--field-order:${index}"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
+  byId('vision-note').textContent = draft.visualDraftBy === 'bedrock' ? 'The vision agent filled these details from your evidence. Check them before creating.' : 'Vision analysis was unavailable. This cautious draft asks for an inspection; use different evidence if it misses the issue.';
+  setReportPhase('review');
+  clearTimeout(reviewRevealTimer);
+  reviewRevealTimer = setTimeout(() => {
+    if (version === reportVersion && byId('report-dialog').open) byId('submit-report-button').hidden = false;
+  }, 1100);
+}
+
+async function analyzeReport() {
+  const files = Array.from(byId('issue-photo').files || []);
+  const videos = files.filter((file) => file.type.startsWith('video/'));
+  const images = files.filter((file) => file.type.startsWith('image/'));
+  if (!files.length || !reportLocationReady || !currentLocation) { showToast('Add evidence and enable your location first.'); return; }
+  if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length) || files.some((file) => file.size > 25 * 1024 * 1024)) { showToast('Choose up to four photos or one video, each under 25 MB.'); return; }
+  if (!cloudMode) { showToast('AI analysis needs the live Civicloop app.'); return; }
+  if (!requireSignIn()) return;
+  const version = ++reportVersion;
+  const point = { ...currentLocation };
+  const city = point.city || activeCity;
+  const place = 'Pinned location';
+  let visionTimer;
+  setReportPhase('workflow');
+  setWorkflowStep(0);
+  try {
+    const visionImages = [];
+    const videoFrames = [];
+    for (const file of images) visionImages.push(await imagePreviewBase64(file));
+    for (const file of videos) videoFrames.push(...await videoPreviewFrames(file));
+    if ([...visionImages, ...videoFrames].reduce((sum, frame) => sum + frame.length, 0) > 1600000) throw new Error('Choose fewer or smaller evidence files for AI review.');
+    if (version !== reportVersion) return;
+    setWorkflowStep(1);
+    const { draftId } = await api('/reports/draft', { method: 'POST', body: JSON.stringify({ city, place, lat: point.lat, lng: point.lng }) });
+    if (version !== reportVersion) return;
+    pendingDraftId = draftId;
+    const evidenceKeys = [];
+    for (const file of files) {
+      const upload = await api(`/reports/${encodeURIComponent(draftId)}/upload`, { method: 'POST', body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }) });
+      const uploaded = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
+      if (!uploaded.ok) throw new Error(`Could not upload ${file.name}.`);
+      await api(`/reports/${encodeURIComponent(draftId)}/evidence`, { method: 'POST', body: JSON.stringify({ evidenceKey: upload.evidenceKey, fileName: file.name }) });
+      evidenceKeys.push(upload.evidenceKey);
+    }
+    if (version !== reportVersion) return;
+    setWorkflowStep(2);
+    visionTimer = setTimeout(() => { if (version === reportVersion) setWorkflowStep(3); }, 1200);
+    const inspected = await api('/agent/inspect', { method: 'POST', body: JSON.stringify({ draftId, city, place, liveLocation: { lat: point.lat, lng: point.lng }, evidenceKeys, visionImages, videoFrames }) });
+    clearTimeout(visionTimer);
+    if (version !== reportVersion) return;
+    if (!inspected.draft?.category || !inspected.draft?.title || !inspected.draft?.details) throw new Error('Civicloop could not draft this report. Try a clearer photo.');
+    setWorkflowStep(3);
+    showReportReview(inspected, version);
+  } catch (error) {
+    clearTimeout(visionTimer);
+    if (version !== reportVersion) return;
+    pendingDraftId = null;
+    setReportPhase('capture');
+    showToast(error.message || 'Could not analyze this evidence. Try again.');
   }
-  byId('issue-summary').value = `${category}: ${title || details}${details && title ? `. ${details}` : ''}`;
-  showToast('Draft ready to review. This local demo does not call an AI model.');
 }
 
 async function createReport(event) {
   event.preventDefault();
-  let title = byId('issue-title').value.trim();
-  let details = byId('issue-details').value.trim();
-  let category = byId('issue-category').value;
-  let city = byId('issue-city').value.trim() || currentLocation?.city || activeCity;
-  let place = byId('issue-place').value.trim() || 'Pinned location';
-  const files = Array.from(byId('issue-photo').files || []);
-  const shareAuthority = byId('share-authority').checked;
-  const videos = files.filter((file) => file.type.startsWith('video/'));
-  const images = files.filter((file) => file.type.startsWith('image/'));
-  if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length)) { showToast('Choose up to four photos or one video per report.'); return; }
-  if (files.some((file) => file.size > 25 * 1024 * 1024)) { showToast('Each photo or video must be under 25 MB.'); return; }
-  if (!cloudMode && !currentLocation) { showToast('Use GPS before adding a report in this browser demo.'); return; }
-  if (cloudMode) {
-    if (!requireSignIn()) return;
-    try {
-      if (!pendingDraftId) {
-        if (!currentLocation && !files.length) { showToast('Use GPS or add a geotagged photo/video first.'); return; }
-        const visionImages = [];
-        const videoFrames = [];
-        for (const file of images) visionImages.push(await imagePreviewBase64(file));
-        for (const file of videos) videoFrames.push(...await videoPreviewFrames(file));
-        const previewBytes = [...visionImages, ...videoFrames].reduce((sum, frame) => sum + frame.length, 0);
-        if (previewBytes > 1600000) throw new Error('Choose fewer or smaller evidence files for AI review.');
-        const draft = await api('/reports/draft', { method: 'POST', body: JSON.stringify({ city, place, ...(currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : {}) }) });
-        pendingDraftId = draft.draftId;
-        const evidenceKeys = [];
-        try {
-          for (const file of files) {
-            const upload = await api(`/reports/${encodeURIComponent(pendingDraftId)}/upload`, { method: 'POST', body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }) });
-            const uploaded = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
-            if (!uploaded.ok) throw new Error(`Could not upload ${file.name}.`);
-            await api(`/reports/${encodeURIComponent(pendingDraftId)}/evidence`, { method: 'POST', body: JSON.stringify({ evidenceKey: upload.evidenceKey, fileName: file.name }) });
-            evidenceKeys.push(upload.evidenceKey);
-          }
-          const inspected = await api('/agent/inspect', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, city, place, category, title, details, summary: byId('issue-summary').value.trim(), liveLocation: currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : null, evidenceKeys, visionImages, videoFrames }) });
-          category = inspected.draft.category;
-          title = inspected.draft.title;
-          details = inspected.draft.details;
-          byId('issue-category').value = category;
-          byId('issue-title').value = title;
-          byId('issue-details').value = details;
-          byId('issue-summary').value = inspected.draft.summary;
-          byId('issue-city').value = inspected.location.city;
-          byId('issue-place').value = inspected.location.place;
-          currentLocation = { lat: inspected.location.lat, lng: inspected.location.lng, city: inspected.location.city };
-          city = inspected.location.city;
-          place = inspected.location.place;
-          activeCity = city;
-          byId('city-select').value = city;
-          updateLocationLabel();
-          byId('location-coords').textContent = inspected.location.ward ? `Ward ${inspected.location.ward.number} · ${inspected.location.ward.name}` : `${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`;
-          byId('draft-note').textContent = inspected.draft.visualDraftBy === 'bedrock' ? 'Vision Agent suggested these fields · review before creating' : 'Add or review the fields; AI media analysis is unavailable';
-          byId('submit-report-button').innerHTML = 'Create report <span aria-hidden="true">→</span>';
-          showToast(`Draft ready · ${inspected.location.ward ? `Ward ${inspected.location.ward.number} ${inspected.location.ward.name}` : inspected.location.city}. Review the fields, then submit again.`);
-          return;
-        } catch (error) {
-          pendingDraftId = null;
-          throw error;
+  if (reportPhase !== 'review' || !pendingDraftId) return;
+  if (!requireSignIn()) return;
+  const button = byId('submit-report-button');
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = 'Creating report…';
+  try {
+    const category = byId('issue-category').value;
+    const title = byId('issue-title').value.trim();
+    const details = byId('issue-details').value.trim();
+    if (!category || !title || !details) throw new Error('The AI draft is incomplete. Use different evidence and try again.');
+    const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim() }) });
+    const report = result.report;
+    reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
+    let note = '';
+    if (byId('share-authority').checked) {
+      try {
+        const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
+        if (!route.canSend) note = 'Report saved to the community feed; no authority or demo email recipient is configured.';
+        else {
+          const draftSource = report.emailDraftBy === 'bedrock' ? 'Drafted by the Bedrock agent' : 'Template email draft';
+          const ward = report.wardNumber ? `Ward ${report.wardNumber} · ${report.wardName} · ${report.corporation}` : report.city;
+          const evidencePlan = report.photoName ? `Evidence: ${report.photoName}` : 'No evidence file attached.';
+          const confirmed = window.confirm(`Send to: ${route.recipientLabel}\n\nSubject: ${report.emailSubject}\n${draftSource}\n\n${report.emailBody}\n\n${ward}\nCoordinates: ${report.lat}, ${report.lng}\n${evidencePlan}\n\nThe authority link requires a fix photo and GPS. Neighbors still verify the repair. Continue?`);
+          if (confirmed) {
+            const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true }) });
+            note = `Report emailed to ${sent.recipientLabel}${sent.attachmentCount ? ` with ${sent.attachmentCount} photo(s) attached` : ''}.`;
+          } else note = 'Report saved to the community feed; email not sent.';
         }
-      }
-
-      title = byId('issue-title').value.trim();
-      details = byId('issue-details').value.trim();
-      category = byId('issue-category').value;
-      if (!category || !title || !details) { showToast('Review the suggested category, title, and details first.'); return; }
-      const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim() }) });
-      const report = result.report;
-      reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
-      let note = '';
-      if (shareAuthority) {
-        try {
-          const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
-          if (!route.canSend) note = 'Report saved to the community feed; no authority or demo email recipient is configured.';
-          else {
-            const draftSource = report.emailDraftBy === 'bedrock' ? 'Drafted by the Bedrock agent' : 'Template email draft';
-            const ward = report.wardNumber ? `Ward ${report.wardNumber} · ${report.wardName} · ${report.corporation}` : report.city;
-            const evidencePlan = report.photoName ? `Evidence: ${report.photoName}` : 'No evidence file attached.';
-            const confirmed = window.confirm(`Send to: ${route.recipientLabel}\n\nSubject: ${report.emailSubject}\n${draftSource}\n\n${report.emailBody}\n\n${ward}\nCoordinates: ${report.lat}, ${report.lng}\n${evidencePlan}\n\nThe authority link requires a fix photo and GPS. Neighbors still verify the repair. Continue?`);
-            if (confirmed) {
-              const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true }) });
-              note = `Report emailed to ${sent.recipientLabel}${sent.attachmentCount ? ` with ${sent.attachmentCount} photo(s) attached` : ''}.`;
-            } else note = 'Report saved to the community feed; email not sent.';
-          }
-        } catch (error) { note = `Report saved, but the authority email was not sent: ${error.message}`; }
-      }
-      pendingDraftId = null;
-      try { await refreshReports(); } catch { render(); note ||= 'Report saved. Refresh to load the latest shared neighborhood feed.'; }
-      byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
-      showToast(note || 'Report shared with the neighborhood.');
-      openDetails(report.id);
-    } catch (error) { showToast(error.message); }
-    return;
-  }
-  if (!currentLocation) { showToast('Use GPS before adding a report in this browser demo.'); return; }
-  city = currentLocation.city;
-  const report = {
-    id: `CL-${String(Date.now()).slice(-6)}`, city, category: category || 'Other public safety/environment issue', title: title || 'Public-space issue needs inspection', details: details || 'A resident-submitted issue needs review.', createdAt: Date.now(),
-    summary: byId('issue-summary').value.trim(), place,
-    lat, lng, status: 'open', checks: 0, fixChecks: 0, age: 'just now', icon: iconForCategory(byId('issue-category').value), photoName: byId('issue-photo').files[0]?.name || '',
-  };
-  reports.unshift(report); persist(); render(); byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
-  showToast('Report added to this browser demo.');
-  openDetails(report.id);
+      } catch (error) { note = `Report saved, but the authority email was not sent: ${error.message}`; }
+    }
+    pendingDraftId = null;
+    try { await refreshReports(); } catch { render(); note ||= 'Report saved. Refresh to load the latest shared neighborhood feed.'; }
+    byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
+    showToast(note || 'Report shared with the neighborhood.');
+    openDetails(report.id);
+  } catch (error) { showToast(error.message); }
+  finally { button.disabled = false; button.innerHTML = 'Create report <span aria-hidden="true">→</span>'; }
 }
 
 function iconForCategory(category = '') {
@@ -612,9 +638,10 @@ function resetPhotoPreview() {
   photoPreviewUrls = [];
   byId('photo-preview').replaceChildren();
   byId('photo-preview').hidden = true;
-  byId('photo-name').textContent = 'Up to 4 photos or 1 video · video max 15 sec';
+  byId('photo-name').textContent = 'Up to 4 photos or 1 video · max 15 sec';
   pendingDraftId = null;
-  byId('submit-report-button').innerHTML = 'Review report <span aria-hidden="true">→</span>';
+  clearTimeout(reviewRevealTimer);
+  byId('submit-report-button').hidden = true;
 }
 
 function handlePhoto() {
@@ -625,9 +652,10 @@ function handlePhoto() {
   if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length) || files.some((file) => file.size > 25 * 1024 * 1024)) {
     byId('issue-photo').value = '';
     showToast('Choose up to four photos or one video, each under 25 MB.');
+    updateCaptureReady();
     return;
   }
-  if (!files.length) return;
+  if (!files.length) { updateCaptureReady(); return; }
   byId('photo-name').textContent = `${files.length} file${files.length === 1 ? '' : 's'} selected · up to 4 photos or 1 video`;
   const previews = files.map((file) => {
     const url = URL.createObjectURL(file);
@@ -640,6 +668,7 @@ function handlePhoto() {
   });
   byId('photo-preview').replaceChildren(...previews);
   byId('photo-preview').hidden = false;
+  updateCaptureReady();
 }
 
 async function toggleNearbyAlerts() {
@@ -668,16 +697,27 @@ async function shareUpdate() {
   catch { byId('share-dialog').close(); showToast('Copy the update from the share sheet if your browser supports it.'); }
 }
 
-document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', () => {
-  byId('issue-city').value = currentLocation?.city === 'Other' || activeCity === 'Other' ? '' : currentLocation?.city || activeCity;
-  byId('report-dialog').showModal();
-}));
+function openReportDialog() {
+  reportVersion++;
+  byId('report-form').reset();
+  resetPhotoPreview();
+  reportLocationReady = false;
+  byId('issue-city').value = activeCity;
+  byId('location-label').textContent = 'Enable location';
+  byId('location-coords').textContent = 'Use your current GPS';
+  setReportPhase('capture');
+  if (!byId('report-dialog').open) byId('report-dialog').showModal();
+}
+
+document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', openReportDialog));
 document.querySelectorAll('.close-dialog').forEach((button) => button.addEventListener('click', () => byId('report-dialog').close()));
+byId('report-dialog').addEventListener('close', () => { reportVersion++; clearTimeout(reviewRevealTimer); });
 byId('report-form').addEventListener('submit', createReport);
 byId('auth-button').addEventListener('click', () => window.CivicAuth.token() ? window.CivicAuth.signOut() : window.CivicAuth.signIn());
-byId('draft-button').addEventListener('click', draftSummary);
+byId('analyze-report-button').addEventListener('click', analyzeReport);
+byId('restart-report').addEventListener('click', openReportDialog);
 byId('issue-photo').addEventListener('change', handlePhoto);
-byId('form-location-button').addEventListener('click', () => locateUser());
+byId('form-location-button').addEventListener('click', () => locateUser({ forReport: true }));
 byId('locate-button').addEventListener('click', () => locateUser());
 byId('bottom-check-button').addEventListener('click', () => locateUser({ notify: true }));
 byId('nearby-alerts-button').addEventListener('click', toggleNearbyAlerts);
