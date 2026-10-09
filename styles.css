@@ -1587,6 +1587,8 @@ h1 {
 }
 
 @media(max-width:390px) {
+  .report-dialog .upload-location-row { grid-template-columns:1fr }
+  .report-dialog .upload-box,.report-dialog .location-box { min-height:72px }
   .page-shell {
   padding-inline:10px
 }
