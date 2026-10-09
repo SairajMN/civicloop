@@ -25,6 +25,7 @@ try {
   for (const city of Object.values(authorities)) {
     if (city.email?.includes('@')) authorityEmails.add(city.email);
     for (const area of Object.values(city.areas || {})) if (area.email?.includes('@')) authorityEmails.add(area.email);
+    for (const ward of Object.values(city.wards || {})) if (ward.email?.includes('@')) authorityEmails.add(ward.email);
   }
 } catch { throw new Error('AUTHORITY_EMAILS_JSON must be valid JSON.'); }
 if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;

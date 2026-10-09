@@ -12,8 +12,8 @@ Parameters:
     Description: HTTPS origin hosting the Civicloop frontend.
   BedrockModelId:
     Type: String
-    Default: ''
-    Description: Optional model ID available in the selected Region; empty uses a local draft fallback.
+    Default: qwen.qwen3-vl-235b-a22b
+    Description: Direct Amazon Bedrock vision model available in the selected Region.
   SesFromEmail:
     Type: String
     Default: ''
@@ -39,8 +39,8 @@ Globals:
   Function:
     Runtime: nodejs22.x
     Architectures: [arm64]
-    Timeout: 15
-    MemorySize: 512
+    Timeout: 60
+    MemorySize: 1024
     Environment:
       Variables:
         REPORTS_TABLE: !Ref ReportsTable
@@ -200,6 +200,10 @@ Resources:
             MaxAge: 300
       LifecycleConfiguration:
         Rules:
+          - Id: expire-unsubmitted-report-media
+            Status: Enabled
+            ExpirationInDays: 1
+            Prefix: reports/drafts/
           - Id: expire-evidence-after-one-year
             Status: Enabled
             ExpirationInDays: 365
@@ -237,12 +241,12 @@ Resources:
         - Version: '2012-10-17'
           Statement:
             - Effect: Allow
-              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:TransactWriteItems]
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:Scan, dynamodb:TransactWriteItems]
               Resource:
                 - !GetAtt ReportsTable.Arn
                 - !Sub '${ReportsTable.Arn}/index/*'
             - Effect: Allow
-              Action: [s3:GetObject, s3:PutObject]
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
               Resource: !Sub '${EvidenceBucket.Arn}/reports/*'
             - Effect: Allow
               Action: [bedrock:InvokeModel]
@@ -281,12 +285,36 @@ Resources:
             Method: GET
             Auth:
               Authorizer: CognitoAuthorizer
+        GetFixEvidence:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/fix-evidence
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
 
         CreateReport:
           Type: HttpApi
           Properties:
             ApiId: !Ref ReportsApi
             Path: /reports
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        CreateReportDraft:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/draft
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        InspectReportMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /agent/inspect
             Method: POST
             Auth:
               Authorizer: CognitoAuthorizer
@@ -352,6 +380,12 @@ Resources:
             ApiId: !Ref ReportsApi
             Path: /reports/{id}/authority-confirm
             Method: POST
+        AuthorityFixUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/authority-upload
+            Method: POST
         WardUpdate:
           Type: HttpApi
           Properties:
@@ -360,6 +394,12 @@ Resources:
             Method: POST
             Auth:
               Authorizer: CognitoAuthorizer
+        DailyAuthorityReminders:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Description: Check hourly for unresolved authority reports past their three-day reminder time.
+            Enabled: true
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup

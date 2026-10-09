@@ -37,7 +37,12 @@ let map;
 let markerLayer;
 let currentLocation = null;
 let selectedReportId = null;
-let photoPreviewUrl = null;
+let photoPreviewUrls = [];
+let pendingDraftId = null;
+let authorityLinkContext = null;
+let locationWatchId = null;
+let lastNearbyRefreshAt = 0;
+const notifiedNearby = new Set();
 let showingAll = false;
 let toastTimer;
 const demoClientId = localStorage.getItem(DEMO_CLIENT_KEY) || (() => {
@@ -101,7 +106,7 @@ function render() {
   byId('auth-button').hidden = !cloudMode;
   byId('ward-button').hidden = cloudMode && !window.CivicAuth.isWard();
   byId('share-authority').disabled = !cloudMode;
-  byId('draft-note').textContent = cloudMode ? 'Bedrock agent drafts the summary and authority email' : 'Local demo only · AI email needs AWS';
+  byId('draft-note').textContent = cloudMode ? 'Bedrock Vision Agent can suggest fields from your evidence' : 'Local demo only · AI review needs AWS';
 }
 
 async function refreshReports() {
@@ -121,16 +126,43 @@ async function handleAuthorityConfirmationLink() {
     const { report } = await api(`/reports/${encodeURIComponent(reportId)}`);
     activeCity = report.city;
     byId('city-select').value = activeCity;
-    await refreshReports();
-    if (window.confirm(`Report ${report.id}: are you confirming that the reported issue has been fixed? Neighbors will still need to verify it.`)) {
-      const result = await api(`/reports/${encodeURIComponent(reportId)}/authority-confirm`, { method: 'POST', body: JSON.stringify({ token }) });
-      await refreshReports();
-      showToast(result.message);
-    }
-    openDetails(reportId);
+    authorityLinkContext = { reportId, token };
+    openAuthorityProofForm(report);
   } catch (error) {
     showToast(error.message || 'This confirmation link could not be used.');
   }
+}
+
+function openAuthorityProofForm(report) {
+  byId('authority-proof-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">AUTHORITY FIX UPDATE</span><h2 class="dialog-section-title">Show what was repaired</h2><p class="dialog-section-copy">${esc(report.id)} · ${esc(report.wardName ? `Ward ${report.wardNumber} ${report.wardName}` : report.place || report.city)}. Add a fix photo and enable location at the repair site. Neighbors will verify the update.</p></div><button class="icon-button close-authority-proof" type="button" aria-label="Close">×</button></div><form id="authority-proof-form"><label class="field-label" for="authority-proof-file">Fix photo</label><input class="form-control" id="authority-proof-file" type="file" accept="image/*" capture="environment" required><p class="privacy-note">Location must be within 500 metres of the original report.</p><div class="dialog-actions"><button class="button button-quiet close-authority-proof" type="button">Cancel</button><button class="button button-primary" type="submit">Send fix for review <span aria-hidden="true">→</span></button></div></form>`;
+  byId('authority-proof-dialog').showModal();
+}
+
+function getLivePoint() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('Location is not available in this browser.')); return; }
+    navigator.geolocation.getCurrentPosition(({ coords }) => resolve({ lat: coords.latitude, lng: coords.longitude }), () => reject(new Error('Allow location access at the repair site, then try again.')), { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+  });
+}
+
+async function submitAuthorityProof(event) {
+  event.preventDefault();
+  if (!authorityLinkContext) return;
+  const file = byId('authority-proof-file').files[0];
+  if (!file || !file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) { showToast('Choose a fix photo under 10 MB.'); return; }
+  try {
+    showToast('Getting repair location…');
+    const point = await getLivePoint();
+    const path = `/reports/${encodeURIComponent(authorityLinkContext.reportId)}`;
+    const upload = await api(`${path}/authority-upload`, { method: 'POST', body: JSON.stringify({ token: authorityLinkContext.token, fileName: file.name, contentType: file.type, size: file.size }) });
+    const response = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
+    if (!response.ok) throw new Error('The fix photo could not be uploaded. Try again.');
+    const result = await api(`${path}/authority-confirm`, { method: 'POST', body: JSON.stringify({ token: authorityLinkContext.token, evidenceKey: upload.evidenceKey, ...point }) });
+    authorityLinkContext = null;
+    byId('authority-proof-dialog').close();
+    if (cloudMode) await refreshReports();
+    showToast(result.message);
+  } catch (error) { showToast(error.message || 'Could not submit the fix evidence.'); }
 }
 
 function ageLabel(createdAt) {
@@ -221,8 +253,9 @@ function openDetails(id) {
     <div class="detail-status-row"><span class="status-badge ${statusClass(report.status)}">${esc(reportStatusLabel(report))}</span></div>
     <p class="detail-description">${esc(report.details || report.summary || 'A community report has been added for this location.')}</p>
     ${report.summary ? `<p class="detail-description"><strong>Reviewed report draft:</strong> ${esc(report.summary)}</p>` : ''}
-    <p class="detail-location">⌖ ${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)} · approximate report location</p>
-    ${report.photoName ? `<p class="detail-location">▧ Evidence ${cloudMode ? 'uploaded privately' : 'selected'}: ${esc(report.photoName)} <span class="draft-row">${cloudMode ? 'A signed-in neighbor can open the private file.' : 'Session preview only; media is not uploaded or saved.'}</span>${cloudMode ? `<button class="text-button" type="button" data-evidence="${esc(report.id)}">View evidence</button>` : ''}</p>` : ''}
+    <p class="detail-location">⌖ ${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)} · approximate report location${report.wardNumber ? `<br>Ward ${esc(report.wardNumber)} · ${esc(report.wardName)} · ${esc(report.corporation || '')}` : ''}</p>
+    ${report.photoName ? `<p class="detail-location">▧ Evidence ${cloudMode ? 'uploaded privately' : 'selected'}: ${esc(report.photoName)} <span class="draft-row">${cloudMode ? 'Evidence is available through signed links.' : 'Session preview only; media is not uploaded or saved.'}</span>${cloudMode ? `<button class="text-button" type="button" data-evidence="${esc(report.id)}">View evidence</button><span class="evidence-links" data-evidence-links="${esc(report.id)}"></span>` : ''}</p>` : ''}
+    ${report.hasAuthorityProof && cloudMode ? `<p class="detail-location">▧ Authority fix photo <button class="text-button" type="button" data-fix-evidence="${esc(report.id)}">View repair evidence</button><span class="evidence-links" data-fix-evidence-link="${esc(report.id)}"></span></p>` : ''}
     <div class="detail-counts"><span><strong>${Number(report.checks) || 0}</strong> community checks</span><span><strong>${Number(report.fixChecks) || 0}</strong> fix confirmations</span></div>
     <div class="checkin-box"><strong>Passing by? Add a quick check</strong><p>Your check updates this report; it won't create a duplicate ticket.</p><div class="checkin-actions"><button class="button button-outline" type="button" data-check="still">Still there</button><button class="button button-outline" type="button" data-check="fixed">Looks fixed</button><button class="button button-quiet" type="button" data-check="unsure">Can't verify</button></div></div>
     <div class="detail-actions"><button class="button button-quiet share-trigger" type="button">Share update</button><button class="button button-primary" type="button" data-close-detail>Done</button></div>`;
@@ -273,9 +306,8 @@ function locateUser({ notify = false } = {}) {
     const close = nearbyItems().map((report) => ({ report, distance: distanceKm(lat, lng, report.lat, report.lng) })).filter((item) => item.distance <= 1.5).sort((a, b) => a.distance - b.distance);
     if (close.length) {
       showToast(`${close.length} open report${close.length === 1 ? '' : 's'} within 1.5 km. Tap a pin or card to check.`);
-      const followUp = close.find(({ report }) => report.status !== 'verified' && (Date.now() - (report.createdAt || Date.now() - (report.ageHours || 0) * 3600000)) >= 86400000);
-      if (notify && followUp && 'Notification' in window && localStorage.getItem(ALERTS_KEY) === 'on' && Notification.permission === 'granted') new Notification('Civicloop · follow-up nearby', { body: `${followUp.report.title} · is it still there?` });
     } else showToast('No open reports found within 1.5 km.');
+    if (notify) notifyPassingReports(lat, lng);
   }, () => showToast('Location permission was unavailable. You can still browse the map.'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
 }
 
@@ -290,6 +322,93 @@ function distanceKm(lat1, lon1, lat2, lon2) {
   const dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function notifyPassingReports(lat, lng) {
+  if (localStorage.getItem(ALERTS_KEY) !== 'on') return;
+  const close = cityReports().filter((report) => report.status !== 'verified' && Number.isFinite(Number(report.lat)) && distanceKm(lat, lng, Number(report.lat), Number(report.lng)) <= 0.3);
+  for (const report of close) {
+    if (notifiedNearby.has(report.id)) continue;
+    notifiedNearby.add(report.id);
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const notification = new Notification('Civicloop · issue nearby', { body: `${report.title} · can you check whether it is still there?`, tag: `civicloop-${report.id}` });
+      notification.onclick = () => { window.focus(); openDetails(report.id); notification.close(); };
+    } else showToast(`Nearby report: ${report.title}. Tap its pin to check it.`);
+  }
+}
+
+function startNearbyWatch() {
+  if (!navigator.geolocation || locationWatchId !== null) return;
+  locationWatchId = navigator.geolocation.watchPosition(async ({ coords }) => {
+    const { latitude: lat, longitude: lng } = coords;
+    const nearest = Object.entries(CITIES).filter(([city]) => city !== 'Other').map(([city, value]) => ({ city, distance: distanceKm(lat, lng, ...value.center) })).sort((a, b) => a.distance - b.distance)[0];
+    const city = nearest && nearest.distance < 60 ? nearest.city : 'Other';
+    const changedCity = city !== activeCity;
+    currentLocation = { lat, lng, city };
+    if (changedCity) {
+      activeCity = city;
+      byId('city-select').value = city;
+      if (cloudMode) { lastNearbyRefreshAt = Date.now(); try { await refreshReports(); } catch { render(); } }
+      else render();
+    }
+    if (cloudMode && Date.now() - lastNearbyRefreshAt > 60000) {
+      lastNearbyRefreshAt = Date.now();
+      try { await refreshReports(); } catch { /* Nearby checks continue with the last loaded report list. */ }
+    }
+    notifyPassingReports(lat, lng);
+  }, () => showToast('Nearby reminders need location access while Civicloop is open.'), { enableHighAccuracy: false, maximumAge: 30000, timeout: 15000 });
+}
+
+async function canvasJpeg(source, width, height) {
+  const scale = Math.min(1, 900 / width, 900 / height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext('2d', { alpha: false });
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  for (const quality of [0.62, 0.48, 0.34]) {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (blob && blob.size <= 220000) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      return btoa(binary);
+    }
+  }
+  throw new Error('A preview was too large to analyze. Choose a smaller photo or shorter video.');
+}
+
+async function imagePreviewBase64(file) {
+  const bitmap = await createImageBitmap(file);
+  try { return await canvasJpeg(bitmap, bitmap.width, bitmap.height); }
+  finally { bitmap.close?.(); }
+}
+
+async function videoPreviewFrames(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
+  try {
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = () => reject(new Error('Could not read this video. Use an MP4 or MOV video.'));
+    });
+    if (!Number.isFinite(video.duration) || video.duration > 15) throw new Error('Videos must be 15 seconds or shorter.');
+    const times = [...new Set([Math.min(0.3, video.duration / 3), video.duration / 2, Math.max(0, video.duration - 0.15)])];
+    const frames = [];
+    for (const time of times) {
+      video.currentTime = time;
+      await new Promise((resolve) => { video.onseeked = resolve; });
+      frames.push(await canvasJpeg(video, video.videoWidth, video.videoHeight));
+    }
+    return frames;
+  } finally {
+    video.src = '';
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function draftSummary() {
@@ -317,53 +436,92 @@ async function draftSummary() {
 
 async function createReport(event) {
   event.preventDefault();
-  const title = byId('issue-title').value.trim();
-  const details = byId('issue-details').value.trim();
-  if (!currentLocation) { showToast('Set a map pin or use your location before submitting.'); return; }
-  const city = byId('issue-city').value.trim();
-  if (!city) { showToast('Add the city or municipality for this location.'); return; }
-  const [lat, lng] = [currentLocation.lat, currentLocation.lng];
-  currentLocation = { lat, lng, city };
-  rememberCity(city, [lat, lng]);
-  activeCity = city;
-  byId('city-select').value = city;
-  const place = byId('issue-place').value.trim() || 'Pinned location';
+  let title = byId('issue-title').value.trim();
+  let details = byId('issue-details').value.trim();
+  let category = byId('issue-category').value;
+  let city = byId('issue-city').value.trim() || currentLocation?.city || activeCity;
+  let place = byId('issue-place').value.trim() || 'Pinned location';
+  const files = Array.from(byId('issue-photo').files || []);
   const shareAuthority = byId('share-authority').checked;
+  const videos = files.filter((file) => file.type.startsWith('video/'));
+  const images = files.filter((file) => file.type.startsWith('image/'));
+  if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length)) { showToast('Choose up to four photos or one video per report.'); return; }
+  if (files.some((file) => file.size > 25 * 1024 * 1024)) { showToast('Each photo or video must be under 25 MB.'); return; }
+  if (!cloudMode && !currentLocation) { showToast('Use GPS before adding a report in this browser demo.'); return; }
   if (cloudMode) {
     if (!requireSignIn()) return;
-    const file = byId('issue-photo').files[0];
     try {
-      const result = await api('/reports', { method: 'POST', body: JSON.stringify({ city, place, category: byId('issue-category').value, title, details, summary: byId('issue-summary').value.trim(), lat, lng, photoName: file?.name || '' }) });
+      if (!pendingDraftId) {
+        if (!currentLocation && !files.length) { showToast('Use GPS or add a geotagged photo/video first.'); return; }
+        const visionImages = [];
+        const videoFrames = [];
+        for (const file of images) visionImages.push(await imagePreviewBase64(file));
+        for (const file of videos) videoFrames.push(...await videoPreviewFrames(file));
+        const previewBytes = [...visionImages, ...videoFrames].reduce((sum, frame) => sum + frame.length, 0);
+        if (previewBytes > 1600000) throw new Error('Choose fewer or smaller evidence files for AI review.');
+        const draft = await api('/reports/draft', { method: 'POST', body: JSON.stringify({ city, place, ...(currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : {}) }) });
+        pendingDraftId = draft.draftId;
+        const evidenceKeys = [];
+        try {
+          for (const file of files) {
+            const upload = await api(`/reports/${encodeURIComponent(pendingDraftId)}/upload`, { method: 'POST', body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }) });
+            const uploaded = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
+            if (!uploaded.ok) throw new Error(`Could not upload ${file.name}.`);
+            await api(`/reports/${encodeURIComponent(pendingDraftId)}/evidence`, { method: 'POST', body: JSON.stringify({ evidenceKey: upload.evidenceKey, fileName: file.name }) });
+            evidenceKeys.push(upload.evidenceKey);
+          }
+          const inspected = await api('/agent/inspect', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, city, place, category, title, details, summary: byId('issue-summary').value.trim(), liveLocation: currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : null, evidenceKeys, visionImages, videoFrames }) });
+          category = inspected.draft.category;
+          title = inspected.draft.title;
+          details = inspected.draft.details;
+          byId('issue-category').value = category;
+          byId('issue-title').value = title;
+          byId('issue-details').value = details;
+          byId('issue-summary').value = inspected.draft.summary;
+          byId('issue-city').value = inspected.location.city;
+          byId('issue-place').value = inspected.location.place;
+          currentLocation = { lat: inspected.location.lat, lng: inspected.location.lng, city: inspected.location.city };
+          city = inspected.location.city;
+          place = inspected.location.place;
+          activeCity = city;
+          byId('city-select').value = city;
+          updateLocationLabel();
+          byId('location-coords').textContent = inspected.location.ward ? `Ward ${inspected.location.ward.number} · ${inspected.location.ward.name}` : `${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`;
+          byId('draft-note').textContent = inspected.draft.visualDraftBy === 'bedrock' ? 'Vision Agent suggested these fields · review before creating' : 'Add or review the fields; AI media analysis is unavailable';
+          byId('submit-report-button').innerHTML = 'Create report <span aria-hidden="true">→</span>';
+          showToast(`Draft ready · ${inspected.location.ward ? `Ward ${inspected.location.ward.number} ${inspected.location.ward.name}` : inspected.location.city}. Review the fields, then submit again.`);
+          return;
+        } catch (error) {
+          pendingDraftId = null;
+          throw error;
+        }
+      }
+
+      title = byId('issue-title').value.trim();
+      details = byId('issue-details').value.trim();
+      category = byId('issue-category').value;
+      if (!category || !title || !details) { showToast('Review the suggested category, title, and details first.'); return; }
+      const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim() }) });
       const report = result.report;
       reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
       let note = '';
-      let evidenceReady = true;
-      if (file) {
-        try {
-          if (file.size > 25 * 1024 * 1024) throw new Error('Evidence must be under 25 MB.');
-          const upload = await api(`/reports/${encodeURIComponent(report.id)}/upload`, { method: 'POST', body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }) });
-          const uploaded = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
-          if (!uploaded.ok) throw new Error('The upload was rejected.');
-          await api(`/reports/${encodeURIComponent(report.id)}/evidence`, { method: 'POST', body: JSON.stringify({ evidenceKey: upload.evidenceKey, fileName: file.name }) });
-        } catch (error) { evidenceReady = false; note = `Report saved; evidence upload failed: ${error.message}`; }
-      }
       if (shareAuthority) {
-        if (!evidenceReady) note = `${note} Email not sent because the evidence upload failed.`;
-        else try {
-          const route = await api(`/authority?city=${encodeURIComponent(city)}&place=${encodeURIComponent(place)}`);
+        try {
+          const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
           if (!route.canSend) note = 'Report saved to the community feed; no authority or demo email recipient is configured.';
           else {
-            const photoAttached = Boolean(file && file.type.startsWith('image/') && file.size <= 5 * 1024 * 1024);
-            const evidencePlan = !file ? 'No evidence file.' : photoAttached ? `Photo attachment: ${file.name}` : `Evidence will be a private link: ${file.name}`;
-            const draftSource = report.emailDraftBy === 'bedrock' ? 'Drafted by the Bedrock agent' : 'Template draft (Bedrock is not enabled)';
-            const confirmed = window.confirm(`Send to: ${route.recipientLabel}\n\nSubject: ${report.emailSubject}\n${draftSource}\n\n${report.emailBody}\n\nArea: ${place}\nCoordinates: ${lat}, ${lng}\n${evidencePlan}\n\nContinue?`);
+            const draftSource = report.emailDraftBy === 'bedrock' ? 'Drafted by the Bedrock agent' : 'Template email draft';
+            const ward = report.wardNumber ? `Ward ${report.wardNumber} · ${report.wardName} · ${report.corporation}` : report.city;
+            const evidencePlan = report.photoName ? `Evidence: ${report.photoName}` : 'No evidence file attached.';
+            const confirmed = window.confirm(`Send to: ${route.recipientLabel}\n\nSubject: ${report.emailSubject}\n${draftSource}\n\n${report.emailBody}\n\n${ward}\nCoordinates: ${report.lat}, ${report.lng}\n${evidencePlan}\n\nThe authority link requires a fix photo and GPS. Neighbors still verify the repair. Continue?`);
             if (confirmed) {
               const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true }) });
-              note = `Report emailed to ${sent.recipientLabel}${sent.attached ? ' with the photo attached' : ''}.`;
+              note = `Report emailed to ${sent.recipientLabel}${sent.attachmentCount ? ` with ${sent.attachmentCount} photo(s) attached` : ''}.`;
             } else note = 'Report saved to the community feed; email not sent.';
           }
         } catch (error) { note = `Report saved, but the authority email was not sent: ${error.message}`; }
       }
+      pendingDraftId = null;
       try { await refreshReports(); } catch { render(); note ||= 'Report saved. Refresh to load the latest shared neighborhood feed.'; }
       byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
       showToast(note || 'Report shared with the neighborhood.');
@@ -371,8 +529,10 @@ async function createReport(event) {
     } catch (error) { showToast(error.message); }
     return;
   }
+  if (!currentLocation) { showToast('Use GPS before adding a report in this browser demo.'); return; }
+  city = currentLocation.city;
   const report = {
-    id: `CL-${String(Date.now()).slice(-6)}`, city, category: byId('issue-category').value, title, details, createdAt: Date.now(),
+    id: `CL-${String(Date.now()).slice(-6)}`, city, category: category || 'Other public safety/environment issue', title: title || 'Public-space issue needs inspection', details: details || 'A resident-submitted issue needs review.', createdAt: Date.now(),
     summary: byId('issue-summary').value.trim(), place,
     lat, lng, status: 'open', checks: 0, fixChecks: 0, age: 'just now', icon: iconForCategory(byId('issue-category').value), photoName: byId('issue-photo').files[0]?.name || '',
   };
@@ -417,7 +577,7 @@ async function dispatchAuthorityEmail(id) {
   const report = reports.find((item) => item.id === id);
   if (!report) return;
   try {
-    const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}`);
+    const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
     if (!route.canSend) { showToast('Configure a verified SES sender and recipient before sending email.'); return; }
     const summary = report.summary || report.details;
     const confirmed = window.confirm(`Send this report email to ${route.recipientLabel}?\n\n${report.title}\n${summary}\nArea: ${report.place || report.city}\nLocation: ${report.lat}, ${report.lng}\nEvidence: ${report.photoName || 'None'}\n\nThe email will use the reviewed report draft. Continue?`);
@@ -448,36 +608,53 @@ async function showShareDialog() {
 }
 
 function resetPhotoPreview() {
-  if (photoPreviewUrl) URL.revokeObjectURL(photoPreviewUrl);
-  photoPreviewUrl = null;
+  photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  photoPreviewUrls = [];
   byId('photo-preview').replaceChildren();
   byId('photo-preview').hidden = true;
-  byId('photo-name').textContent = 'Optional · session preview only';
+  byId('photo-name').textContent = 'Up to 4 photos or 1 video · video max 15 sec';
+  pendingDraftId = null;
+  byId('submit-report-button').innerHTML = 'Review report <span aria-hidden="true">→</span>';
 }
 
 function handlePhoto() {
-  const file = byId('issue-photo').files[0];
+  const files = Array.from(byId('issue-photo').files || []);
   resetPhotoPreview();
-  if (!file) return;
-  byId('photo-name').textContent = `${file.name} · preview only`;
-  photoPreviewUrl = URL.createObjectURL(file);
-  const preview = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
-  preview.src = photoPreviewUrl;
-  if (preview.tagName === 'VIDEO') { preview.controls = true; preview.muted = true; }
-  preview.alt = file.type.startsWith('video/') ? '' : 'Selected evidence preview';
-  byId('photo-preview').replaceChildren(preview);
+  const videos = files.filter((file) => file.type.startsWith('video/'));
+  const images = files.filter((file) => file.type.startsWith('image/'));
+  if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length) || files.some((file) => file.size > 25 * 1024 * 1024)) {
+    byId('issue-photo').value = '';
+    showToast('Choose up to four photos or one video, each under 25 MB.');
+    return;
+  }
+  if (!files.length) return;
+  byId('photo-name').textContent = `${files.length} file${files.length === 1 ? '' : 's'} selected · up to 4 photos or 1 video`;
+  const previews = files.map((file) => {
+    const url = URL.createObjectURL(file);
+    photoPreviewUrls.push(url);
+    const preview = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
+    preview.src = url;
+    if (preview.tagName === 'VIDEO') { preview.controls = true; preview.muted = true; }
+    preview.alt = file.type.startsWith('video/') ? '' : 'Selected evidence preview';
+    return preview;
+  });
+  byId('photo-preview').replaceChildren(...previews);
   byId('photo-preview').hidden = false;
 }
 
 async function toggleNearbyAlerts() {
   const enabled = localStorage.getItem(ALERTS_KEY) === 'on';
   if (enabled) {
-    localStorage.setItem(ALERTS_KEY, 'off'); render(); showToast('Nearby alerts turned off.'); return;
+    localStorage.setItem(ALERTS_KEY, 'off');
+    if (locationWatchId !== null) navigator.geolocation.clearWatch(locationWatchId);
+    locationWatchId = null;
+    render(); showToast('Nearby alerts turned off.'); return;
   }
   if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
   localStorage.setItem(ALERTS_KEY, 'on'); render();
-  showToast('Nearby reminders are on while this demo is open.');
-  if (currentLocation) locateUser({ notify: true });
+  startNearbyWatch();
+  showToast('Nearby reminders are on while Civicloop is open.');
+  if (currentLocation) notifyPassingReports(currentLocation.lat, currentLocation.lng);
 }
 
 async function shareUpdate() {
@@ -519,7 +696,14 @@ byId('detail-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-detail, [data-close-detail]')) byId('detail-dialog').close();
   const check = event.target.closest('[data-check]'); if (check) applyCheck(check.dataset.check);
   if (event.target.closest('.share-trigger')) showShareDialog();
-  const evidence = event.target.closest('[data-evidence]'); if (evidence) api(`/reports/${encodeURIComponent(evidence.dataset.evidence)}/evidence`).then(({ url }) => location.assign(url)).catch((error) => showToast(error.message));
+  const evidence = event.target.closest('[data-evidence]'); if (evidence) api(`/reports/${encodeURIComponent(evidence.dataset.evidence)}/evidence`).then(({ files }) => {
+    const list = byId('detail-content').querySelector(`[data-evidence-links="${CSS.escape(evidence.dataset.evidence)}"]`);
+    if (list) list.innerHTML = files.map((file, index) => `<a href="${esc(file.url)}" target="_blank" rel="noopener">Open ${esc(file.fileName || `evidence ${index + 1}`)}</a>`).join(' · ');
+  }).catch((error) => showToast(error.message));
+  const fixEvidence = event.target.closest('[data-fix-evidence]'); if (fixEvidence) api(`/reports/${encodeURIComponent(fixEvidence.dataset.fixEvidence)}/fix-evidence`).then(({ url }) => {
+    const list = byId('detail-content').querySelector(`[data-fix-evidence-link="${CSS.escape(fixEvidence.dataset.fixEvidence)}"]`);
+    if (list) list.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Open repair photo</a>`;
+  }).catch((error) => showToast(error.message));
 });
 byId('share-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.close-share')) byId('share-dialog').close();
@@ -529,11 +713,15 @@ byId('share-dialog').addEventListener('click', (event) => {
   if (event.target.closest('.system-share')) shareUpdate();
 });
 byId('report-dialog').addEventListener('click', (event) => { if (event.target === byId('report-dialog')) byId('report-dialog').close(); });
+byId('authority-proof-dialog').addEventListener('click', (event) => { if (event.target.closest('.close-authority-proof')) byId('authority-proof-dialog').close(); });
+byId('authority-proof-dialog').addEventListener('submit', submitAuthorityProof);
+byId('authority-proof-dialog').addEventListener('close', () => { authorityLinkContext = null; });
 byId('detail-dialog').addEventListener('close', () => { selectedReportId = null; });
 
 render();
 window.CIVICLOOP_AUTH_READY?.then(async () => {
   render();
   if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } }
+  if (localStorage.getItem(ALERTS_KEY) === 'on') startNearbyWatch();
   await handleAuthorityConfirmationLink();
 });
