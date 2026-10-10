@@ -26,6 +26,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional Secrets Manager secret name with Yahoo SMTP username and appPassword.
+  GmailSecretId:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager secret name with Gmail OAuth clientId, clientSecret, refreshToken and fromEmail.
   DemoInboxEmail:
     Type: String
     Default: ''
@@ -53,6 +57,7 @@ Globals:
         SES_FROM_EMAIL: !Ref SesFromEmail
         INSTAGRAM_SECRET_ID: !Ref InstagramSecretId
         YAHOO_SECRET_ID: !Ref YahooSecretId
+        GMAIL_SECRET_ID: !Ref GmailSecretId
         DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
         AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
         APP_ORIGIN: !Ref SiteOrigin
@@ -61,6 +66,7 @@ Conditions:
   HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
   HasInstagramSecret: !Not [!Equals [!Ref InstagramSecretId, '']]
   HasYahooSecret: !Not [!Equals [!Ref YahooSecretId, '']]
+  HasGmailSecret: !Not [!Equals [!Ref GmailSecretId, '']]
 
 Resources:
   UserPool:
@@ -267,6 +273,12 @@ Resources:
               - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
                 Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${YahooSecretId}-*'
+              - !Ref AWS::NoValue
+            - !If
+              - HasGmailSecret
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GmailSecretId}-*'
               - !Ref AWS::NoValue
             - !If
               - HasSesSender

@@ -611,7 +611,7 @@ async function dispatchAuthorityEmail(id) {
   if (!report) return;
   try {
     const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
-    if (!route.canSend) { showToast('Configure Yahoo Mail or SES and a recipient before sending email.'); return; }
+    if (!route.canSend) { showToast('Configure Gmail, Yahoo Mail, or SES and a recipient before sending email.'); return; }
     const summary = report.summary || report.details;
     const confirmed = window.confirm(`Send this report email to ${route.recipientLabel}?\n\n${report.title}\n${summary}\nArea: ${report.place || report.city}\nLocation: ${report.lat}, ${report.lng}\nEvidence: ${report.photoName || 'None'}\n\nThe email will use the reviewed report draft. Continue?`);
     if (!confirmed) return;
