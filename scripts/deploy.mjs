@@ -47,6 +47,18 @@ if (env.INSTAGRAM_ACCESS_TOKEN) {
   console.log('Stored Instagram publishing credentials in Secrets Manager in the selected Region.');
 }
 
+if (env.YAHOO_APP_PASSWORD) {
+  if (!env.YAHOO_SECRET_ID || !env.YAHOO_FROM_EMAIL?.endsWith('@yahoo.com')) throw new Error('Set YAHOO_SECRET_ID and YAHOO_FROM_EMAIL for Yahoo SMTP.');
+  const client = new SecretsManagerClient({ region });
+  const secret = JSON.stringify({ username: env.YAHOO_FROM_EMAIL, appPassword: env.YAHOO_APP_PASSWORD });
+  try { await client.send(new CreateSecretCommand({ Name: env.YAHOO_SECRET_ID, SecretString: secret })); }
+  catch (error) {
+    if (error.name !== 'ResourceExistsException') throw error;
+    await client.send(new PutSecretValueCommand({ SecretId: env.YAHOO_SECRET_ID, SecretString: secret }));
+  }
+  console.log('Stored Yahoo SMTP app password in Secrets Manager in the selected Region.');
+}
+
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit', env: { ...process.env, npm_config_cache: process.env.npm_config_cache || join(tmpdir(), 'civicloop-npm-cache') } });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `${command} failed.`);
@@ -60,6 +72,7 @@ const params = [
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
   env.INSTAGRAM_SECRET_ID && `InstagramSecretId=${env.INSTAGRAM_SECRET_ID}`,
+  env.YAHOO_SECRET_ID && `YahooSecretId=${env.YAHOO_SECRET_ID}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
   authorityEmails.size && `SesRecipientAddresses=${[...authorityEmails].join(',')}`,
   env.AUTHORITY_EMAILS_JSON && `AuthorityEmailsJson=${env.AUTHORITY_EMAILS_JSON}`,

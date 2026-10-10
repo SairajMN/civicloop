@@ -8,6 +8,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { imageGps, videoMetadata } from './media-metadata.mjs';
 import { findBengaluruWard } from './ward-lookup.mjs';
 import { instagramCredentials, publishInstagram } from './instagram.mjs';
+import { sendYahooMail } from './yahoo-mail.mjs';
 
 const region = process.env.AWS_REGION;
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
@@ -29,6 +30,13 @@ const authorityMap = () => { try { return JSON.parse(process.env.AUTHORITY_EMAIL
 const reportKey = (id) => ({ pk: `REPORT#${id}`, sk: 'REPORT' });
 
 async function sendReportEmail({ from, to, subject, text, attachments }) {
+  if (process.env.YAHOO_SECRET_ID) {
+    try { return await sendYahooMail({ to, subject, text, attachments }); }
+    catch (error) {
+      console.error(JSON.stringify({ event: 'yahoo-mail-fallback', name: error.name, message: clean(error.message, 180) }));
+    }
+  }
+  if (!from) throw new Error('Yahoo Mail failed and no SES sender is configured.');
   const result = await ses.send(new SendEmailCommand({ FromEmailAddress: from, Destination: { ToAddresses: [to] }, Content: { Simple: { Subject: { Data: subject }, Body: { Text: { Data: text } }, ...(attachments.length ? { Attachments: attachments } : {}) } } }));
   return { messageId: result.MessageId || '', provider: 'Amazon SES' };
 }
@@ -66,7 +74,7 @@ function authorityFor(city, place = '', wardNumber = '', corporation = '') {
     department,
     recipientLabel: demo ? `${department} · test inbox (not a local authority)` : `${department} · ${email}`,
     testRecipient: demo,
-    canSend: Boolean(email.includes('@') && process.env.SES_FROM_EMAIL?.includes('@')),
+    canSend: Boolean(email.includes('@') && (process.env.YAHOO_SECRET_ID || process.env.SES_FROM_EMAIL?.includes('@'))),
   };
 }
 const attachableEvidenceTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime']);
@@ -234,7 +242,7 @@ async function runReminders() {
 
   let sentCount = 0;
   for (const report of due) {
-    if (!report.authorityEmail || !process.env.SES_FROM_EMAIL) continue;
+    if (!report.authorityEmail || !(process.env.YAHOO_SECRET_ID || process.env.SES_FROM_EMAIL)) continue;
     const token = randomBytes(32).toString('hex');
     const link = new URL('/', process.env.APP_ORIGIN || 'https://civicloop-coral.vercel.app');
     link.hash = new URLSearchParams({ confirmReport: report.id, authorityToken: token }).toString();
@@ -566,8 +574,8 @@ async function handle(event) {
     if (report.ownerSub !== user && !isWard(event)) return fail(403, 'Only the reporter or ward desk can send this report.');
     if (body.confirmed !== true) return fail(400, 'Confirm the recipient and report details before sending.');
     if (report.authorityEmailedAt) return json(200, { sent: true, alreadySent: true, recipientLabel: report.authorityRecipientLabel || 'Configured authority' });
-    const route = body.demoOnly === true ? { email: clean(process.env.DEMO_INBOX_EMAIL, 254), recipientLabel: 'Civicloop demo inbox', testRecipient: true, canSend: Boolean(process.env.DEMO_INBOX_EMAIL?.includes('@') && process.env.SES_FROM_EMAIL?.includes('@')) } : authorityFor(report.city, report.place, report.wardNumber, report.corporation);
-    if (!route.canSend) return fail(400, 'Configure a verified SES sender and an authority or demo recipient first.');
+    const route = body.demoOnly === true ? { email: clean(process.env.DEMO_INBOX_EMAIL, 254), recipientLabel: 'Civicloop demo inbox', testRecipient: true, canSend: Boolean(process.env.DEMO_INBOX_EMAIL?.includes('@') && (process.env.YAHOO_SECRET_ID || process.env.SES_FROM_EMAIL?.includes('@'))) } : authorityFor(report.city, report.place, report.wardNumber, report.corporation);
+    if (!route.canSend) return fail(400, 'Configure Yahoo Mail or a verified SES sender and an authority or demo recipient first.');
     const authorityToken = randomBytes(32).toString('hex');
     const authorityConfirmUrl = new URL('/', process.env.APP_ORIGIN || 'https://civicloop-coral.vercel.app');
     authorityConfirmUrl.hash = new URLSearchParams({ confirmReport: id, authorityToken }).toString();
