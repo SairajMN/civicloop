@@ -417,6 +417,12 @@ Resources:
             ApiId: !Ref ReportsApi
             Path: /reports/{id}/authority-confirm
             Method: POST
+        AuthorityViewReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/authority-view
+            Method: POST
         AuthorityFixUpload:
           Type: HttpApi
           Properties:

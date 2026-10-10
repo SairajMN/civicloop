@@ -107,8 +107,8 @@ async function listReports(city) {
 }
 
 function publicReport(item) {
-  const { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceFiles, authorityProofKey, allowInstagram, instagramStatus, instagramPermalink } = item;
-  return { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceCount: evidenceFiles?.length || (item.evidenceKey ? 1 : 0), hasAuthorityProof: Boolean(authorityProofKey), allowInstagram: Boolean(allowInstagram), instagramStatus, instagramPermalink };
+  const { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceFiles, authorityProofKey, authorityProofContentType, allowInstagram, instagramStatus, instagramPermalink } = item;
+  return { id, city, category, title, details, lat, lng, status, createdAt, updatedAt, verifiedAt, checks, fixChecks, photoName, place, summary, authorityEmailedAt, authorityRecipientType, wardNumber, wardName, corporation, evidenceCount: evidenceFiles?.length || (item.evidenceKey ? 1 : 0), hasAuthorityProof: Boolean(authorityProofKey), authorityProofContentType, allowInstagram: Boolean(allowInstagram), instagramStatus, instagramPermalink };
 }
 
 async function getReport(id) {
@@ -250,7 +250,8 @@ async function runReminders() {
     const { attachments, note: evidenceNote } = await emailEvidence(report);
     const authorityConfirmHash = createHash('sha256').update(token).digest('hex');
     await db.send(new UpdateCommand({ TableName: table, Key: reportKey(report.id), UpdateExpression: 'SET authorityConfirmHash = :hash, authorityConfirmExpiresAt = :expires', ConditionExpression: 'reminderDueAt = :due AND #status <> :verified', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':hash': authorityConfirmHash, ':expires': new Date(Date.now() + 30 * 86400000).toISOString(), ':due': report.reminderDueAt, ':verified': 'verified' } }));
-    const text = `Reminder: this Civicloop report was first sent on ${report.authorityEmailedAt} and remains unresolved three days later. Please inspect the location and arrange a fix.\n\n${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}${report.wardNumber ? ` · Ward ${report.wardNumber} ${report.wardName || ''} · ${report.corporation || ''}` : ''}\nCoordinates: ${report.lat}, ${report.lng}\n${evidenceNote}\n\nUse this single-use link to submit a fix photo and the GPS location where it was repaired: ${link.toString()}\nA fix submission remains open for independent community verification.`;
+    const directions = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${report.lat},${report.lng}`)}`;
+    const text = `Reminder: this Civicloop report was first sent on ${report.authorityEmailedAt} and remains unresolved three days later. Please inspect the location and arrange a fix.\n\n${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}${report.wardNumber ? ` · Ward ${report.wardNumber} ${report.wardName || ''} · ${report.corporation || ''}` : ''}\nCoordinates: ${report.lat}, ${report.lng}\nDirections: ${directions}\n${evidenceNote}\n\nUse this single-use link to view the report and submit one fix photo or video without signing in: ${link.toString()}\nA fix submission remains open for independent community verification.`;
     await sendReportEmail({ from: process.env.SES_FROM_EMAIL, to: report.authorityEmail, subject: `[Reminder] ${clean(report.emailSubject || report.title, 150)}`, text, attachments });
     await db.send(new UpdateCommand({ TableName: table, Key: reportKey(report.id), UpdateExpression: 'SET reminderSentAt = :at REMOVE reminderDueAt', ConditionExpression: 'reminderDueAt = :due', ExpressionAttributeValues: { ':at': now(), ':due': report.reminderDueAt } }));
     sentCount += 1;
@@ -310,6 +311,18 @@ async function handle(event) {
   const user = claims?.sub;
   const body = event.body ? JSON.parse(event.body) : {};
 
+  const authorityView = path.match(/^\/reports\/([^/]+)\/authority-view$/);
+  if (method === 'POST' && authorityView) {
+    const id = idPart(authorityView[1]);
+    const token = clean(body.token, 128);
+    if (!/^[a-f0-9]{64}$/.test(token)) return fail(410, 'This authority link is invalid or expired.');
+    const report = await getReport(id);
+    if (!report || report.authorityConfirmHash !== createHash('sha256').update(token).digest('hex') || report.authorityConfirmExpiresAt <= now()) return fail(410, 'This authority link is invalid, expired, or already used.');
+    const files = report.evidenceFiles || [];
+    const evidence = await Promise.all(files.map(async (file) => ({ fileName: file.fileName, contentType: file.contentType, url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: file.key }), { expiresIn: 300 }) })));
+    return json(200, { report: { id: report.id, title: report.title, details: report.details, category: report.category, place: report.place, city: report.city, wardNumber: report.wardNumber, wardName: report.wardName, lat: report.lat, lng: report.lng }, evidence });
+  }
+
   const authorityConfirm = path.match(/^\/reports\/([^/]+)\/authority-confirm$/);
   if (method === 'POST' && authorityConfirm) {
     const id = idPart(authorityConfirm[1]);
@@ -320,26 +333,31 @@ async function handle(event) {
     if (!report || report.authorityConfirmHash !== digest || report.authorityConfirmExpiresAt <= now()) return fail(410, 'This link has expired or was already used.');
     if (!pointIsValid(Number(report.lat), Number(report.lng))) return fail(404, 'The report location is unavailable.');
     const proofKey = clean(body.evidenceKey, 500);
-    if (!proofKey.startsWith(`reports/${id}/fix/`)) return fail(400, 'Upload a fix photo using this report link.');
+    if (!proofKey.startsWith(`reports/${id}/fix/`)) return fail(400, 'Upload fix evidence using this report link.');
     const proof = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: proofKey }));
-    if (!proof.ContentType?.startsWith('image/') || (proof.ContentLength || 0) > 10 * 1024 * 1024) return fail(400, 'Fix evidence must be an image under 10 MB.');
-    const image = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: proofKey }));
-    const metadataGps = await imageGps(await image.Body.transformToByteArray());
+    const isImage = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'].includes(proof.ContentType);
+    const isVideo = ['video/mp4', 'video/quicktime'].includes(proof.ContentType);
+    if ((!isImage && !isVideo) || (proof.ContentLength || 0) < 1 || (proof.ContentLength || 0) > (isVideo ? 25 : 10) * 1024 * 1024) return fail(400, 'Use one photo under 10 MB or one video under 25 MB.');
+    const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: proofKey }));
+    const bytes = await object.Body.transformToByteArray();
+    const metadata = isVideo ? videoMetadata(bytes) : { gps: await imageGps(bytes) };
+    if (isVideo && (!Number.isFinite(metadata.durationSeconds) || metadata.durationSeconds > 15)) return fail(400, 'Fix videos must be 15 seconds or shorter.');
+    const metadataGps = metadata.gps;
     const lat = Number(metadataGps?.lat ?? body.lat);
     const lng = Number(metadataGps?.lng ?? body.lng);
     if (!pointIsValid(lat, lng)) return fail(400, 'Allow location access or upload a photo with GPS metadata.');
-    if (pointDistanceMeters(report.lat, report.lng, lat, lng) > 500) return fail(400, 'The fix photo location must be within 500 metres of the report.');
+    if (pointDistanceMeters(report.lat, report.lng, lat, lng) > 500) return fail(400, 'The fix location must be within 500 metres of the report.');
     const at = now();
     try {
       await db.send(new UpdateCommand({
         TableName: table,
         Key: reportKey(id),
-        UpdateExpression: 'SET #status = :claimed, authorityConfirmedAt = :at, authorityProofKey = :proof, authorityProofLat = :lat, authorityProofLng = :lng, updatedAt = :at REMOVE authorityConfirmHash, authorityConfirmExpiresAt',
+        UpdateExpression: 'SET #status = :claimed, authorityConfirmedAt = :at, authorityProofKey = :proof, authorityProofContentType = :contentType, authorityProofLat = :lat, authorityProofLng = :lng, updatedAt = :at REMOVE authorityConfirmHash, authorityConfirmExpiresAt',
         ConditionExpression: 'authorityConfirmHash = :hash AND authorityConfirmExpiresAt > :at AND attribute_exists(pk)',
         ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':claimed': 'claimed', ':at': at, ':hash': digest, ':proof': proofKey, ':lat': lat, ':lng': lng },
+        ExpressionAttributeValues: { ':claimed': 'claimed', ':at': at, ':hash': digest, ':proof': proofKey, ':contentType': proof.ContentType, ':lat': lat, ':lng': lng },
       }));
-      return json(200, { confirmed: true, message: 'Fix photo received. Neighbors can now verify the repair.' });
+      return json(200, { confirmed: true, message: 'Fix evidence received. Neighbors can now verify the repair.' });
     } catch (error) {
       if (error.name === 'ConditionalCheckFailedException') return fail(410, 'This link has expired or was already used.');
       throw error;
@@ -357,7 +375,8 @@ async function handle(event) {
     const type = clean(body.contentType, 100);
     const size = Number(body.size);
     const fileName = clean(body.fileName, 180).replace(/[^a-zA-Z0-9._-]/g, '_');
-    if (!type.startsWith('image/') || !fileName || !Number.isFinite(size) || size < 1 || size > 10 * 1024 * 1024) return fail(400, 'Choose a fix photo under 10 MB.');
+    const maxSize = ['video/mp4', 'video/quicktime'].includes(type) ? 25 : ['image/jpeg', 'image/png', 'image/webp', 'image/heic'].includes(type) ? 10 : 0;
+    if (!maxSize || !fileName || !Number.isFinite(size) || size < 1 || size > maxSize * 1024 * 1024) return fail(400, 'Choose one photo under 10 MB or one video under 25 MB.');
     const key = `reports/${id}/fix/${randomUUID()}-${fileName}`;
     const uploadUrl = await getSignedUrl(s3, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: type }), { expiresIn: 300 });
     return json(200, { uploadUrl, evidenceKey: key, expiresIn: 300 });
@@ -591,7 +610,8 @@ async function handle(event) {
     const subject = clean(report.emailSubject || `Civicloop report: ${report.title}`, 180).replace(/[\r\n]/g, ' ');
     const { attachments, note: evidenceNote } = await emailEvidence(report);
     const wardLine = report.wardNumber ? `\nWard: ${report.wardNumber} · ${report.wardName} · ${report.corporation}` : '';
-    const text = `${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}${wardLine}\nCoordinates: ${report.lat}, ${report.lng}\nCategory: ${report.category}\n${evidenceNote}\n\nAuthority action: open this single-use link to submit a fix photo and the location where it was repaired: ${authorityConfirmUrl.toString()}\nThe fix report stays open for independent neighbor verification.\n\nDraft source: ${report.emailDraftBy === 'bedrock' ? 'Amazon Bedrock agent' : 'Civicloop template'}. Resident-submitted and not independently verified.`;
+    const directions = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${report.lat},${report.lng}`)}`;
+    const text = `${clean(report.emailBody || report.summary || report.details, 3000)}\n\nReport: ${report.id}\nArea: ${clean(report.place || report.city, 120)}${wardLine}\nCoordinates: ${report.lat}, ${report.lng}\nDirections: ${directions}\nCategory: ${report.category}\n${evidenceNote}\n\nAuthority action: open this single-use link to view this report and submit one fix photo or video without signing in: ${authorityConfirmUrl.toString()}\nThe fix report stays open for independent neighbor verification.\n\nDraft source: ${report.emailDraftBy === 'bedrock' ? 'Amazon Bedrock agent' : 'Civicloop template'}. Resident-submitted and not independently verified.`;
     const authorityConfirmHash = createHash('sha256').update(authorityToken).digest('hex');
     await db.send(new UpdateCommand({ TableName: table, Key: reportKey(id), UpdateExpression: 'SET authorityConfirmHash = :hash, authorityConfirmExpiresAt = :expires', ExpressionAttributeValues: { ':hash': authorityConfirmHash, ':expires': new Date(Date.now() + 30 * 86400000).toISOString() } }));
     const sent = await sendReportEmail({ from: process.env.SES_FROM_EMAIL, to: route.email, subject, text, attachments });

@@ -151,20 +151,20 @@ async function handleAuthorityConfirmationLink() {
   const reportId = params.get('confirmReport');
   const token = params.get('authorityToken');
   if (!reportId || !token) return;
-  history.replaceState(null, '', `${location.pathname}${location.search}`);
   try {
-    const { report } = await api(`/reports/${encodeURIComponent(reportId)}`);
+    const { report, evidence } = await api(`/reports/${encodeURIComponent(reportId)}/authority-view`, { method: 'POST', body: JSON.stringify({ token }) });
     activeCity = report.city;
     byId('city-select').value = activeCity;
     authorityLinkContext = { reportId, token };
-    openAuthorityProofForm(report);
+    openAuthorityProofForm(report, evidence);
   } catch (error) {
     showToast(error.message || 'This confirmation link could not be used.');
   }
 }
 
-function openAuthorityProofForm(report) {
-  byId('authority-proof-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">AUTHORITY FIX UPDATE</span><h2 class="dialog-section-title">Show what was repaired</h2><p class="dialog-section-copy">${esc(report.id)} · ${esc(report.wardName ? `Ward ${report.wardNumber} ${report.wardName}` : report.place || report.city)}. Add a fix photo and enable location at the repair site. Neighbors will verify the update.</p></div><button class="icon-button close-authority-proof" type="button" aria-label="Close">×</button></div><form id="authority-proof-form"><label class="field-label" for="authority-proof-file">Fix photo</label><input class="form-control" id="authority-proof-file" type="file" accept="image/*" capture="environment" required><p class="privacy-note">Location must be within 500 metres of the original report.</p><div class="dialog-actions"><button class="button button-quiet close-authority-proof" type="button">Cancel</button><button class="button button-primary" type="submit">Send fix for review <span aria-hidden="true">→</span></button></div></form>`;
+function openAuthorityProofForm(report, evidence = []) {
+  const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${Number(report.lat)},${Number(report.lng)}`)}`;
+  byId('authority-proof-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">AUTHORITY FIX UPDATE</span><h2 class="dialog-section-title">${esc(report.title)}</h2><p class="dialog-section-copy">${esc(report.id)} · ${esc(report.wardName ? `Ward ${report.wardNumber} ${report.wardName}` : report.place || report.city)}</p></div><button class="icon-button close-authority-proof" type="button" aria-label="Close">×</button></div><p class="detail-description">${esc(report.details)}</p><p class="detail-location">⌖ ${Number(report.lat).toFixed(5)}, ${Number(report.lng).toFixed(5)} · <a href="${mapsUrl}" target="_blank" rel="noopener">Get directions to the report</a></p>${evidence.length ? `<p class="detail-location">Original evidence: ${evidence.map((file, index) => `<a href="${esc(file.url)}" target="_blank" rel="noopener">${esc(file.fileName || `File ${index + 1}`)}</a>`).join(' · ')} <small>Links expire in 5 minutes.</small></p>` : ''}<form id="authority-proof-form"><label class="field-label" for="authority-proof-file">One fix photo or video</label><input class="form-control" id="authority-proof-file" type="file" accept="image/jpeg,image/png,image/webp,image/heic,video/mp4,video/quicktime" required><p class="privacy-note">Photo: up to 10 MB. Video: up to 15 seconds and 25 MB. Enable location at the repair site, within 500 metres of the original report. Neighbors will verify the fix.</p><div class="dialog-actions"><button class="button button-quiet close-authority-proof" type="button">Cancel</button><button class="button button-primary" type="submit">Send fix for review <span aria-hidden="true">→</span></button></div></form>`;
   byId('authority-proof-dialog').showModal();
 }
 
@@ -179,15 +179,17 @@ async function submitAuthorityProof(event) {
   event.preventDefault();
   if (!authorityLinkContext) return;
   const file = byId('authority-proof-file').files[0];
-  if (!file || !file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) { showToast('Choose a fix photo under 10 MB.'); return; }
+  const maxSize = ['video/mp4', 'video/quicktime'].includes(file?.type) ? 25 : ['image/jpeg', 'image/png', 'image/webp', 'image/heic'].includes(file?.type) ? 10 : 0;
+  if (!maxSize || file.size > maxSize * 1024 * 1024) { showToast('Choose one photo under 10 MB or one video under 25 MB.'); return; }
   try {
     showToast('Getting repair location…');
     const point = await getLivePoint();
     const path = `/reports/${encodeURIComponent(authorityLinkContext.reportId)}`;
     const upload = await api(`${path}/authority-upload`, { method: 'POST', body: JSON.stringify({ token: authorityLinkContext.token, fileName: file.name, contentType: file.type, size: file.size }) });
     const response = await fetch(upload.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
-    if (!response.ok) throw new Error('The fix photo could not be uploaded. Try again.');
+    if (!response.ok) throw new Error('The fix evidence could not be uploaded. Try again.');
     const result = await api(`${path}/authority-confirm`, { method: 'POST', body: JSON.stringify({ token: authorityLinkContext.token, evidenceKey: upload.evidenceKey, ...point }) });
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
     authorityLinkContext = null;
     byId('authority-proof-dialog').close();
     if (cloudMode) await refreshReports();
@@ -287,7 +289,7 @@ function openDetails(id) {
     ${report.summary ? `<p class="detail-description"><strong>Reviewed report draft:</strong> ${esc(report.summary)}</p>` : ''}
     <p class="detail-location">⌖ ${Number(report.lat).toFixed(4)}, ${Number(report.lng).toFixed(4)} · approximate report location${report.wardNumber ? `<br>Ward ${esc(report.wardNumber)} · ${esc(report.wardName)} · ${esc(report.corporation || '')}` : ''}</p>
     ${report.photoName ? `<p class="detail-location">▧ Evidence ${cloudMode ? 'uploaded privately' : 'selected'}: ${esc(report.photoName)} <span class="draft-row">${cloudMode ? 'Evidence is available through signed links.' : 'Session preview only; media is not uploaded or saved.'}</span>${cloudMode ? `<button class="text-button" type="button" data-evidence="${esc(report.id)}">View evidence</button><span class="evidence-links" data-evidence-links="${esc(report.id)}"></span>` : ''}</p>` : ''}
-    ${report.hasAuthorityProof && cloudMode ? `<p class="detail-location">▧ Authority fix photo <button class="text-button" type="button" data-fix-evidence="${esc(report.id)}">View repair evidence</button><span class="evidence-links" data-fix-evidence-link="${esc(report.id)}"></span></p>` : ''}
+    ${report.hasAuthorityProof && cloudMode ? `<p class="detail-location">▧ Authority fix ${report.authorityProofContentType?.startsWith('video/') ? 'video' : 'photo'} <button class="text-button" type="button" data-fix-evidence="${esc(report.id)}">View repair evidence</button><span class="evidence-links" data-fix-evidence-link="${esc(report.id)}"></span></p>` : ''}
     ${report.instagramStatus === 'published' ? `<p class="detail-location">Instagram follow-up published.${report.instagramPermalink?.startsWith('https://www.instagram.com/') ? ` <a href="${esc(report.instagramPermalink)}" target="_blank" rel="noopener">View post</a>` : ''}</p>` : report.allowInstagram && !report.instagramStatus ? `<p class="detail-location">Public Instagram follow-up is scheduled only if this remains unresolved after 7 days and a neighbor confirms it. <button class="text-button" type="button" data-instagram-opt-out="${esc(report.id)}">Cancel public follow-up</button></p>` : ''}
     <div class="detail-counts"><span><strong>${Number(report.checks) || 0}</strong> community checks</span><span><strong>${Number(report.fixChecks) || 0}</strong> fix confirmations</span></div>
     <div class="checkin-box"><strong>Passing by? Add a quick check</strong><p>Your check updates this report; it won't create a duplicate ticket.</p><div class="checkin-actions"><button class="button button-outline" type="button" data-check="still">Still there</button><button class="button button-outline" type="button" data-check="fixed">Looks fixed</button><button class="button button-quiet" type="button" data-check="unsure">Can't verify</button></div></div>
@@ -835,7 +837,7 @@ byId('detail-dialog').addEventListener('click', (event) => {
   }).catch((error) => showToast(error.message));
   const fixEvidence = event.target.closest('[data-fix-evidence]'); if (fixEvidence) api(`/reports/${encodeURIComponent(fixEvidence.dataset.fixEvidence)}/fix-evidence`).then(({ url }) => {
     const list = byId('detail-content').querySelector(`[data-fix-evidence-link="${CSS.escape(fixEvidence.dataset.fixEvidence)}"]`);
-    if (list) list.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Open repair photo</a>`;
+    if (list) list.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Open repair evidence</a>`;
   }).catch((error) => showToast(error.message));
 });
 byId('share-dialog').addEventListener('click', (event) => {
