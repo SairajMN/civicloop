@@ -71,18 +71,6 @@ Images and short video frames are reviewed by `gpt-4o-mini` when the OpenAI key 
 
 The Instagram publisher includes the public report link, ward, issue hashtags, `@bbmp.swm`, and `@deobbmp` in caption **text**. Instagram Login publishing does not provide account tagging through this integration. A failed or uncertain publish is held for review instead of blindly retried.
 
-## Try it in three minutes
-
-1. Open the [live app](https://civicloop-coral.vercel.app/) on a phone or in a narrow browser window. Explore the map and feed, then sign in to create a report.
-2. Choose **Live camera** or **Add evidence**, allow location, and watch the image review fill the report draft. An unrelated image should be rejected before report creation.
-3. Review the category, ward, evidence, and recipient. Create the report and show its map pin and public detail link.
-4. Show the email's attached evidence and private repair link in the configured inbox. If a ward contact is not configured, explain that this is demo delivery.
-5. Show how a passerby marks **Still there** or **Fixed**, and how repair evidence remains subject to community verification.
-6. Show the API, Lambda, DynamoDB, and S3 resources in the AWS Management Console. If showing an Instagram post, disclose whether its location is exact or approximate.
-
-For the hackathon video, keep this walkthrough **under three minutes** and upload it to YouTube as public or unlisted. The [official rules](https://www.wemakedevs.org/aws/env/rules) require a public repository, the video, and a short writeup covering the problem, build, and AWS's role. Judges will see the submitted video rather than a live demo, so prioritize the working path over a feature list.
-
-Suggested edit: **0:00–0:20** show the roadside problem; **0:20–1:15** capture, GPS, AI review, and ward; **1:15–2:05** show the emailed evidence and repair link; **2:05–2:35** show neighbor verification and the report status; **2:35–2:55** show the AWS resources that made the flow work. Leave a few seconds for the project name and links. Use a real report but keep private repair tokens out of the recording.
 
 ## Run locally
 
