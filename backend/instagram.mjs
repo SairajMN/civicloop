@@ -20,8 +20,8 @@ export async function instagramCredentials() {
   const result = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.INSTAGRAM_SECRET_ID }));
   const value = JSON.parse(result.SecretString || '{}');
   if (!value.accessToken || !/^\d+$/.test(String(value.userId))) throw new Error('Instagram secret needs accessToken and numeric userId.');
-  if (!value.expiresAt || Number.isNaN(Date.parse(value.expiresAt))) throw new Error('Instagram secret needs a long-lived token expiresAt timestamp.');
-  if (Date.parse(value.expiresAt) < Date.now() + 7 * 86400000) {
+  if (value.expiresAt && Number.isNaN(Date.parse(value.expiresAt))) throw new Error('Instagram secret has an invalid expiresAt timestamp.');
+  if (value.expiresAt && Date.parse(value.expiresAt) < Date.now() + 7 * 86400000) {
     const url = new URL('https://graph.instagram.com/refresh_access_token');
     url.searchParams.set('grant_type', 'ig_refresh_token');
     url.searchParams.set('access_token', value.accessToken);

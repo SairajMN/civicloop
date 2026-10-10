@@ -34,11 +34,11 @@ if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
 
 if (env.INSTAGRAM_ACCESS_TOKEN) {
-  const required = ['INSTAGRAM_SECRET_ID', 'INSTAGRAM_APP_ID', 'INSTAGRAM_USER_ID', 'INSTAGRAM_TOKEN_EXPIRES_AT'];
+  const required = ['INSTAGRAM_SECRET_ID', 'INSTAGRAM_APP_ID', 'INSTAGRAM_USER_ID'];
   if (required.some((key) => !env[key] || env[key].startsWith('your_'))) throw new Error(`Set ${required.join(', ')} before deploying Instagram publishing.`);
-  if (!/^\d+$/.test(env.INSTAGRAM_APP_ID) || !/^\d+$/.test(env.INSTAGRAM_USER_ID) || !Number.isFinite(Date.parse(env.INSTAGRAM_TOKEN_EXPIRES_AT))) throw new Error('Instagram app ID, user ID, or token expiry is invalid.');
+  if (!/^\d+$/.test(env.INSTAGRAM_APP_ID) || !/^\d+$/.test(env.INSTAGRAM_USER_ID) || (env.INSTAGRAM_TOKEN_EXPIRES_AT && !Number.isFinite(Date.parse(env.INSTAGRAM_TOKEN_EXPIRES_AT)))) throw new Error('Instagram app ID, user ID, or token expiry is invalid.');
   const client = new SecretsManagerClient({ region });
-  const secret = JSON.stringify({ appId: env.INSTAGRAM_APP_ID, userId: env.INSTAGRAM_USER_ID, accessToken: env.INSTAGRAM_ACCESS_TOKEN, expiresAt: env.INSTAGRAM_TOKEN_EXPIRES_AT });
+  const secret = JSON.stringify({ appId: env.INSTAGRAM_APP_ID, userId: env.INSTAGRAM_USER_ID, accessToken: env.INSTAGRAM_ACCESS_TOKEN, ...(env.INSTAGRAM_TOKEN_EXPIRES_AT ? { expiresAt: env.INSTAGRAM_TOKEN_EXPIRES_AT } : {}) });
   try { await client.send(new CreateSecretCommand({ Name: env.INSTAGRAM_SECRET_ID, SecretString: secret })); }
   catch (error) {
     if (error.name !== 'ResourceExistsException') throw error;
