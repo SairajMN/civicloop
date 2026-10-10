@@ -17,11 +17,7 @@ Parameters:
   SesFromEmail:
     Type: String
     Default: ''
-    Description: Sender address used by Yahoo SMTP or SES for human-triggered ward email.
-  YahooSmtpSecretId:
-    Type: String
-    Default: ''
-    Description: Optional Secrets Manager secret ID with JSON keys username and appPassword for Yahoo SMTP.
+    Description: Verified Amazon SES sender address for civic report email.
   InstagramSecretId:
     Type: String
     Default: ''
@@ -51,8 +47,6 @@ Globals:
         EVIDENCE_BUCKET: !Ref EvidenceBucket
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         SES_FROM_EMAIL: !Ref SesFromEmail
-        YAHOO_SMTP_USER: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:username}}', '']
-        YAHOO_SMTP_APP_PASSWORD: !If [HasYahooSmtpSecret, !Sub '{{resolve:secretsmanager:${YahooSmtpSecretId}:SecretString:appPassword}}', '']
         INSTAGRAM_SECRET_ID: !Ref InstagramSecretId
         DEMO_INBOX_EMAIL: !Ref DemoInboxEmail
         AUTHORITY_EMAILS_JSON: !Ref AuthorityEmailsJson
@@ -60,7 +54,6 @@ Globals:
 
 Conditions:
   HasSesSender: !Not [!Equals [!Ref SesFromEmail, '']]
-  HasYahooSmtpSecret: !Not [!Equals [!Ref YahooSmtpSecretId, '']]
   HasInstagramSecret: !Not [!Equals [!Ref InstagramSecretId, '']]
 
 Resources:

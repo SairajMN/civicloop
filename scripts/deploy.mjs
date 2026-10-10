@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 const backendRequire = createRequire(new URL('../backend/package.json', import.meta.url));
 const { CloudFormationClient, DescribeStacksCommand } = backendRequire('@aws-sdk/client-cloudformation');
 const { CognitoIdentityProviderClient, CreateManagedLoginBrandingCommand, DeleteIdentityProviderCommand, DescribeManagedLoginBrandingByClientCommand } = backendRequire('@aws-sdk/client-cognito-identity-provider');
+const { SecretsManagerClient, CreateSecretCommand, PutSecretValueCommand } = backendRequire('@aws-sdk/client-secrets-manager');
 
 const root = new URL('../', import.meta.url);
 const envPath = new URL('../.env', import.meta.url);
@@ -32,6 +33,20 @@ if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;
 if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION to the selected Region shown in AWS Settings > View all projects > Overview > Additional Info > Region.');
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
 
+if (env.INSTAGRAM_ACCESS_TOKEN) {
+  const required = ['INSTAGRAM_SECRET_ID', 'INSTAGRAM_APP_ID', 'INSTAGRAM_USER_ID', 'INSTAGRAM_TOKEN_EXPIRES_AT'];
+  if (required.some((key) => !env[key] || env[key].startsWith('your_'))) throw new Error(`Set ${required.join(', ')} before deploying Instagram publishing.`);
+  if (!/^\d+$/.test(env.INSTAGRAM_APP_ID) || !/^\d+$/.test(env.INSTAGRAM_USER_ID) || !Number.isFinite(Date.parse(env.INSTAGRAM_TOKEN_EXPIRES_AT))) throw new Error('Instagram app ID, user ID, or token expiry is invalid.');
+  const client = new SecretsManagerClient({ region });
+  const secret = JSON.stringify({ appId: env.INSTAGRAM_APP_ID, userId: env.INSTAGRAM_USER_ID, accessToken: env.INSTAGRAM_ACCESS_TOKEN, expiresAt: env.INSTAGRAM_TOKEN_EXPIRES_AT });
+  try { await client.send(new CreateSecretCommand({ Name: env.INSTAGRAM_SECRET_ID, SecretString: secret })); }
+  catch (error) {
+    if (error.name !== 'ResourceExistsException') throw error;
+    await client.send(new PutSecretValueCommand({ SecretId: env.INSTAGRAM_SECRET_ID, SecretString: secret }));
+  }
+  console.log('Stored Instagram publishing credentials in Secrets Manager in the selected Region.');
+}
+
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit', env: { ...process.env, npm_config_cache: process.env.npm_config_cache || join(tmpdir(), 'civicloop-npm-cache') } });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `${command} failed.`);
@@ -44,7 +59,6 @@ const params = [
   `SiteOrigin=${siteOrigin}`,
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
-  env.YAHOO_SMTP_SECRET_ID && `YahooSmtpSecretId=${env.YAHOO_SMTP_SECRET_ID}`,
   env.INSTAGRAM_SECRET_ID && `InstagramSecretId=${env.INSTAGRAM_SECRET_ID}`,
   env.DEMO_INBOX_EMAIL && `DemoInboxEmail=${env.DEMO_INBOX_EMAIL}`,
   authorityEmails.size && `SesRecipientAddresses=${[...authorityEmails].join(',')}`,

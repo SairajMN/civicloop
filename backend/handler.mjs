@@ -5,7 +5,6 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanComma
 import { S3Client, CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import nodemailer from 'nodemailer';
 import { imageGps, videoMetadata } from './media-metadata.mjs';
 import { findBengaluruWard } from './ward-lookup.mjs';
 import { instagramCredentials, publishInstagram } from './instagram.mjs';
@@ -30,25 +29,6 @@ const authorityMap = () => { try { return JSON.parse(process.env.AUTHORITY_EMAIL
 const reportKey = (id) => ({ pk: `REPORT#${id}`, sk: 'REPORT' });
 
 async function sendReportEmail({ from, to, subject, text, attachments }) {
-  const yahooUser = clean(process.env.YAHOO_SMTP_USER, 254);
-  const yahooPassword = process.env.YAHOO_SMTP_APP_PASSWORD;
-  if (yahooUser && yahooPassword) {
-    if (yahooUser.toLowerCase() !== from.toLowerCase()) throw new Error('Yahoo SMTP account must match the configured sender.');
-    try {
-      const transport = nodemailer.createTransport({ host: 'smtp.mail.yahoo.com', port: 465, secure: true, auth: { user: yahooUser, pass: yahooPassword } });
-      const result = await transport.sendMail({
-        from: yahooUser,
-        to,
-        subject,
-        text,
-        attachments: attachments.map(({ RawContent, FileName, ContentType }) => ({ filename: FileName, content: Buffer.from(RawContent), contentType: ContentType })),
-      });
-      return { messageId: result.messageId, provider: 'Yahoo SMTP' };
-    } catch (error) {
-      console.error(JSON.stringify({ event: 'yahoo-smtp-fallback', name: error.name, message: clean(error.message, 160) }));
-    }
-  }
-
   const result = await ses.send(new SendEmailCommand({ FromEmailAddress: from, Destination: { ToAddresses: [to] }, Content: { Simple: { Subject: { Data: subject }, Body: { Text: { Data: text } }, ...(attachments.length ? { Attachments: attachments } : {}) } } }));
   return { messageId: result.MessageId || '', provider: 'Amazon SES' };
 }
