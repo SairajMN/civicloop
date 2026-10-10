@@ -193,18 +193,10 @@ async function runFollowUpAgent(report) {
 
 const issueCategories = ['Waste dumping', 'Plastic burning', 'Water leak', 'Blocked drain', 'Hazardous battery / e-waste', 'Road damage', 'Broken public infrastructure', 'Other public safety/environment issue'];
 
-function safeVisualDraft(input) {
-  const fallbackCategory = issueCategories.find((item) => item.toLowerCase() === clean(input.category, 80).toLowerCase()) || 'Other public safety/environment issue';
-  const details = clean(input.details, 800);
-  const title = clean(input.title, 100) || (details ? details.slice(0, 72) : 'Public-space issue needs inspection');
-  return { category: fallbackCategory, title, details: details || 'A resident-submitted photo or video needs review. Please confirm the visible issue at the pinned location.', summary: clean(input.summary, 600) || `${fallbackCategory}: ${title}. ${details}`.slice(0, 600), confidence: 'low', visualDraftBy: 'template' };
-}
-
-async function runVisualAgent({ input, imageFrames = [] }) {
-  const fallback = safeVisualDraft(input);
-  if (!modelId || !imageFrames.length) return fallback;
+async function runVisualAgent({ imageFrames = [] }) {
+  if (!modelId || !imageFrames.length) throw new Error('Image review is unavailable. Please try again later.');
   try {
-    const content = [{ text: JSON.stringify({ task: 'Examine every attached image frame and identify the visible civic issue. Select one category exactly as written in allowedCategories. Waste dumping means discarded trash; plastic burning requires visible smoke or flames; blocked drain requires a drain visibly obstructed; water leak requires flowing water from a pipe or fixture; road damage requires pothole or broken road surface; hazardous battery/e-waste requires visible batteries or electronics. If evidence is ambiguous, choose Other public safety/environment issue and explain what is visible. Write specific, factual details, neutral title and concise summary. Do not infer people, location, cause or blame. Return only a JSON object with category, title, details, summary, confidence.', allowedCategories: issueCategories }) }];
+    const content = [{ text: JSON.stringify({ task: 'Inspect every image carefully. Accept only if a visible, specific public-space problem is clearly shown. Reject selfies, ordinary streets, clean scenes, private interiors, unrelated objects, screenshots, text-only images, and ambiguous evidence. Waste dumping requires visible discarded trash; plastic burning requires visible smoke or flames; blocked drain requires visible obstruction; water leak requires visible escaping water; road damage requires visible broken road surface; hazardous battery/e-waste requires visible discarded batteries or electronics. Other public safety/environment issue requires a concrete visible hazard, described precisely. Never use the user notes to decide relevance. Return only JSON with accepted (boolean), rejectionReason (string if rejected), category (exact allowed category), title, details, summary, confidence (low/medium/high). Do not infer cause, blame, people or location.', allowedCategories: issueCategories }) }];
     for (const encoded of imageFrames) {
       const bytes = Buffer.from(encoded, 'base64');
       content.push({ image: { format: 'jpeg', source: { bytes: Uint8Array.from(bytes) } } });
@@ -214,18 +206,21 @@ async function runVisualAgent({ input, imageFrames = [] }) {
     const object = text.match(/\{[\s\S]*\}/)?.[0];
     const draft = JSON.parse(object || '{}');
     const proposedCategory = clean(draft.category, 80).toLowerCase();
-    const category = issueCategories.find((item) => item.toLowerCase() === proposedCategory) || issueCategories.find((item) => proposedCategory.includes(item.toLowerCase())) || 'Other public safety/environment issue';
+    const category = issueCategories.find((item) => item.toLowerCase() === proposedCategory);
+    const confidence = clean(draft.confidence, 10).toLowerCase();
+    if (draft.accepted !== true || !category || !['medium', 'high'].includes(confidence) || !clean(draft.details, 800)) return { accepted: false, rejectionReason: clean(draft.rejectionReason, 300) || 'The image does not clearly show a supported public-space issue.' };
     return {
+      accepted: true,
       category,
-      title: clean(draft.title, 100) || fallback.title,
-      details: clean(draft.details, 800) || fallback.details,
-      summary: clean(draft.summary, 600) || fallback.summary,
-      confidence: ['low', 'medium', 'high'].includes(clean(draft.confidence, 10).toLowerCase()) ? clean(draft.confidence, 10).toLowerCase() : 'low',
+      title: clean(draft.title, 100) || `${category} needs inspection`,
+      details: clean(draft.details, 800),
+      summary: clean(draft.summary, 600) || clean(draft.details, 600),
+      confidence,
       visualDraftBy: 'bedrock',
     };
   } catch (error) {
-    console.error(JSON.stringify({ event: 'bedrock-vision-fallback', name: error.name, message: clean(error.message, 300) }));
-    return { ...fallback, visualDraftBy: 'template', visionNote: 'Vision analysis was unavailable. Try again with a clearer photo.' };
+    console.error(JSON.stringify({ event: 'bedrock-vision-error', name: error.name, message: clean(error.message, 300) }));
+    throw new Error('Image review is temporarily unavailable. Please try again later.');
   }
 }
 
@@ -435,8 +430,10 @@ async function handle(event) {
     const place = ward?.name || clean(body.place || report.place, 120) || 'Pinned location';
     const visionImages = [...(Array.isArray(body.visionImages) ? body.visionImages : []), ...(Array.isArray(body.videoFrames) ? body.videoFrames : [])];
     if (visionImages.length > 7 || visionImages.some((image) => typeof image !== 'string' || image.length > 400000) || visionImages.reduce((sum, image) => sum + image.length, 0) > 1600000) return fail(400, 'Media previews are too large. Choose fewer or smaller photos.');
-    const input = { category: body.category, title: body.title, details: body.details, summary: body.summary };
-    const draft = await runVisualAgent({ input, imageFrames: visionImages });
+    let draft;
+    try { draft = await runVisualAgent({ imageFrames: visionImages }); }
+    catch { return fail(503, 'AI image review is unavailable right now. Please try again later. No report was created or counted.'); }
+    if (!draft.accepted) return fail(422, draft.rejectionReason);
     const updated = { ...report, ...draft, city, place, lat, lng, ...(ward ? { wardNumber: ward.number, wardName: ward.name, corporation: ward.corporation } : {}), evidenceFiles, photoName: evidenceFiles.map((file) => file.fileName).join(', '), evidenceKey: evidenceFiles.at(-1)?.key || '', evidenceContentType: evidenceFiles.at(-1)?.contentType || '', evidenceSize: evidenceFiles.at(-1)?.size || 0, ...(metadataGps ? { gpsSource: metadataGps.source } : { gpsSource: 'live location' }), ...(videoSeconds !== null ? { videoSeconds } : {}) };
     await db.send(new PutCommand({ TableName: table, Item: updated }));
     return json(200, { draft, location: { city, place, lat, lng, ward: ward ? { number: ward.number, name: ward.name, corporation: ward.corporation } : null, source: updated.gpsSource }, videoSeconds });
@@ -446,17 +443,25 @@ async function handle(event) {
     const draftId = idPart(body.draftId);
     const draft = await getReport(draftId);
     if (!draft || draft.status !== 'draft' || draft.ownerSub !== user) return fail(404, 'Report draft not found. Review the media and start again.');
-    const input = { city: clean(draft.city, 60), place: clean(draft.place, 120) || 'Pinned location', category: clean(body.category || draft.category, 80), title: clean(body.title || draft.title, 100), details: clean(body.details || draft.details, 800), summary: clean(body.summary || draft.summary, 800), lat: Number(draft.lat), lng: Number(draft.lng) };
+    const quotaKey = { pk: `QUOTA#${user}#${dailyQuotaDate()}`, sk: 'REPORTS' };
+    const videoCount = (draft.evidenceFiles || []).some((file) => file.contentType?.startsWith('video/')) ? 1 : 0;
+    try {
+      await db.send(new TransactWriteCommand({ TransactItems: [
+        { Put: { TableName: table, Item: { pk: `ATTEMPT#${draftId}`, sk: 'REPORT', ownerSub: user, expiresAt: Math.floor(Date.now() / 1000) + 90 * 86400 }, ConditionExpression: 'attribute_not_exists(pk)' } },
+        { Update: { TableName: table, Key: quotaKey, UpdateExpression: 'SET expiresAt = :expires ADD reportCount :one, videoCount :video', ConditionExpression: videoCount ? '(attribute_not_exists(reportCount) OR reportCount < :five) AND (attribute_not_exists(videoCount) OR videoCount < :one)' : 'attribute_not_exists(reportCount) OR reportCount < :five', ExpressionAttributeValues: { ':one': 1, ':video': videoCount, ':five': 5, ':expires': Math.floor(Date.now() / 1000) + 90 * 86400 } } },
+      ] }));
+    } catch (error) {
+      if (error.name !== 'TransactionCanceledException') throw error;
+      const attempt = await db.send(new GetCommand({ TableName: table, Key: { pk: `ATTEMPT#${draftId}`, sk: 'REPORT' } }));
+      if (!attempt.Item || attempt.Item.ownerSub !== user) return fail(429, 'You have reached your limit of five submission attempts today, including failed submissions.');
+    }
+    if (draft.accepted !== true || draft.visualDraftBy !== 'bedrock') return fail(422, 'AI image review must confirm a visible public-space issue before this report can be created.');
+    const input = { city: clean(draft.city, 60), place: clean(draft.place, 120) || 'Pinned location', category: clean(draft.category, 80), title: clean(draft.title, 100), details: clean(draft.details, 800), summary: clean(draft.summary, 800), lat: Number(draft.lat), lng: Number(draft.lng) };
     if (!input.city || !input.category || !input.title || !input.details || !pointIsValid(input.lat, input.lng)) return fail(400, 'Review the issue details and confirm a valid location.');
     const triage = await runTriageAgent({ ...draft, ...input });
     const allowInstagram = body.allowInstagram === true && Boolean(process.env.INSTAGRAM_SECRET_ID);
     const report = { ...draft, ...input, id: draftId, status: 'open', updatedAt: now(), checks: 0, fixChecks: 0, urgency: clean(triage.urgency, 20), emailSubject: clean(triage.emailSubject, 160), emailBody: clean(triage.emailBody, 3000), emailDraftBy: triage.emailDraftBy || 'template', ...(allowInstagram ? { allowInstagram: true, instagramDueAt: new Date(Date.now() + 7 * 86400000).toISOString() } : {}) };
     delete report.expiresAt;
-    const quotaKey = { pk: `QUOTA#${user}#${dailyQuotaDate()}`, sk: 'REPORTS' };
-    const videoCount = (report.evidenceFiles || []).some((file) => file.contentType?.startsWith('video/')) ? 1 : 0;
-    const quota = await db.send(new GetCommand({ TableName: table, Key: quotaKey }));
-    if ((quota.Item?.reportCount || 0) >= 5) return fail(429, 'You have reached today’s limit of five reports. Try again tomorrow.');
-    if (videoCount && (quota.Item?.videoCount || 0) >= 1) return fail(429, 'You can submit one video report per day.');
     const copiedFiles = [];
     for (const file of report.evidenceFiles || []) {
       const key = `reports/${draftId}/${randomUUID()}-${clean(file.fileName, 180).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
@@ -468,15 +473,13 @@ async function handle(event) {
       report.evidenceKey = copiedFiles.at(-1).key;
       report.photoName = copiedFiles.map((file) => file.fileName).join(', ');
     }
-    const condition = videoCount ? '(attribute_not_exists(reportCount) OR reportCount < :five) AND (attribute_not_exists(videoCount) OR videoCount < :one)' : 'attribute_not_exists(reportCount) OR reportCount < :five';
     try {
       await db.send(new TransactWriteCommand({ TransactItems: [
         { Put: { TableName: table, Item: report, ConditionExpression: '#status = :draft AND ownerSub = :owner', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':draft': 'draft', ':owner': user } } },
-        { Update: { TableName: table, Key: quotaKey, UpdateExpression: 'SET expiresAt = :expires ADD reportCount :one, videoCount :video', ConditionExpression: condition, ExpressionAttributeValues: { ':one': 1, ':video': videoCount, ':five': 5, ':expires': Math.floor(Date.now() / 1000) + 90 * 86400 } } },
       ] }));
     } catch (error) {
       await Promise.allSettled(copiedFiles.map((file) => s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }))));
-      if (error.name === 'TransactionCanceledException') return fail(429, videoCount ? 'Daily report or video limit reached. You can add up to five reports, including one video report, each day.' : 'You have reached today’s limit of five reports. Try again tomorrow.');
+      if (error.name === 'TransactionCanceledException') return fail(409, 'This report was already submitted. Refresh the page to see it.');
       throw error;
     }
     await Promise.allSettled((draft.evidenceFiles || []).map((file) => s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }))));

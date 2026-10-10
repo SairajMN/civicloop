@@ -483,7 +483,7 @@ function showReportReview(inspected, version) {
   byId('draft-fields').innerHTML = fields.map(([label, value], index) => `<div class="draft-field" style="--field-order:${index}"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
   byId('review-evidence').innerHTML = `<strong>${selectedEvidenceFiles.length} evidence file${selectedEvidenceFiles.length === 1 ? '' : 's'} ready</strong><div>${selectedEvidenceFiles.map((file, index) => `<button class="text-button" type="button" data-preview-index="${index}">View ${index + 1}</button>`).join(' ')}</div><div id="review-media"></div>`;
   showReviewMedia();
-  byId('vision-note').textContent = draft.visualDraftBy === 'bedrock' ? 'The vision agent filled these details from your evidence. Check them before creating.' : 'Vision analysis was unavailable. This cautious draft asks for an inspection; use different evidence if it misses the issue.';
+  byId('vision-note').textContent = 'The vision agent confirmed a visible public-space issue and filled these details from your evidence. Check them before creating.';
   setReportPhase('review');
   clearTimeout(reviewRevealTimer);
   reviewRevealTimer = setTimeout(() => {

@@ -12,7 +12,7 @@ Parameters:
     Description: HTTPS origin hosting the Civicloop frontend.
   BedrockModelId:
     Type: String
-    Default: qwen.qwen3-vl-235b-a22b
+    Default: amazon.nova-lite-v1:0
     Description: Direct Amazon Bedrock vision model available in the selected Region.
   SesFromEmail:
     Type: String
