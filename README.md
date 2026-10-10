@@ -1,67 +1,119 @@
 # Civicloop
 
-Civicloop is a mobile-first neighborhood reporting app for environmental and public-space issues. Residents can pin a report, add photo/video evidence, follow nearby reports, and independently check whether a fix is visible. With the reporter's consent, the app previews and sends a report to the configured local contact; it labels test-inbox delivery distinctly.
+**Turn a roadside problem into a trackable report, a ward-level request, and a community-verified fix.**
 
-## Included
+[Open the app](https://civicloop-coral.vercel.app/) · [See a real report](https://civicloop-coral.vercel.app/?report=bedda9e3-6c4b-4879-b98a-46659becc03d) · [View its Instagram post](https://www.instagram.com/p/DeUr0QgHZ5T/)
 
-- Responsive map and report feed for Bengaluru and Delhi, with a local-only demo mode.
-- Reports can cover any location when the evidence has usable GPS metadata. Otherwise, the app uses the location the resident enables during capture. Bengaluru and Delhi are prefilled; other locations are grouped under Other.
-- Shared reports through API Gateway, Lambda, and DynamoDB.
-- Cognito email/password sign-in using the hosted login page and OAuth authorization code with PKCE. New accounts are confirmed without sending an email; email addresses remain unverified.
-- Private S3 evidence uploads using short-lived signed URLs. Each report can include up to four photos or one video (25 MB per file); videos must be 15 seconds or shorter. Unsubmitted evidence expires after a day; submitted evidence expires after one year.
-- Bedrock Vision Agent fills the issue category, title, details, and summary from compressed image previews. It samples up to three frames from a video because this flow sends images, not a native video input. Residents see capture, analysis, and read-only review steps before creating the report; if vision is unavailable, the app labels its cautious template draft.
-- Image EXIF and common QuickTime GPS metadata take priority over the phone's live GPS. If evidence has no usable GPS, the report uses the live location; Bengaluru points are matched against the final 369 GBA ward polygons and five city corporations.
-- The authenticated account can submit up to five reports per India-local day, including at most one video report.
-- Bedrock Triage Agent drafts the authority email; if Bedrock is unavailable, the app identifies and uses a factual template instead.
-- Bedrock Follow-up Agent that drafts a neutral update only after a report is unresolved for 24 hours. The app requires a person to review and share it.
-- Optional Instagram API publishing from Civicloop's professional account. The reporter must opt in at creation. After seven days, an open report with a distinct neighbor's new “Still there” check can publish one JPEG/PNG photo or MP4 video and a factual caption. A signed S3 link lets Meta fetch that single private object for one hour. The reporter can cancel before publishing. A conditional database claim prevents duplicate automatic attempts.
-- WardDesk Cognito group for authority status updates. A signed-in reporter can also send their own report after reviewing the recipient and message.
-- Report dispatch through Amazon SES, with small evidence files attached. Larger evidence uses private links that expire after 24 hours.
-- A time-limited single-use authority link accepts a repair photo and GPS within 500 metres of the report. The repair photo is available to signed-in neighbors, who still verify the fix in the app.
-- An hourly scheduled check resends the report after three days if it remains unresolved, with the same evidence and a renewed authority link.
-- CloudFront-hosted web assets and 30-day Lambda log retention.
+Civicloop is a mobile-first web app built for the **Waste and Energy** track of [WeMakeDevs Environmental Hacks](https://www.wemakedevs.org/aws/env). It also accepts visible water leaks, blocked drains, road damage, plastic burning, hazardous e-waste, and other public-space hazards. The idea is simple: the person who notices a problem should be able to document it in seconds, and the next person passing by should be able to check whether anything changed.
 
-## Run the local demo
+> **Current live example:** The linked roadside-litter photo was classified as waste dumping by the image agent, matched to Kodigehalli Ward 13, emailed with its photo attached, and published on Civicloop's Instagram account. That photo had no GPS, so its map pin is explicitly approximate. The email went to a configured **demo inbox**, not a municipal official. Ward contacts need independent verification before real authority delivery.
 
-Open `index.html`, or serve the project so browser location and OAuth callbacks have an origin:
+## The problem and the loop
+
+A photo in a chat can disappear without a location, responsible ward, or follow-up. Civicloop keeps the evidence, status, and next action together. It does not declare a repair complete merely because an authority uploads a photo: nearby residents can independently verify it.
+
+```mermaid
+flowchart LR
+    A[Resident captures photo or short video] --> B[GPS from media or phone]
+    B --> C[AI checks visible issue and drafts report]
+    C -->|Relevant| D[Resident reviews and creates report]
+    C -->|Unclear or unrelated| X[No report created]
+    D --> E[Ward lookup and map pin]
+    E --> F[Email with evidence and private fix link]
+    F --> G[Authority submits one repair photo or video]
+    G --> H[Nearby residents check the site]
+    H -->|Two distinct fix checks| I[Community verified]
+    H -->|Still there| J[Unresolved follow-up]
+    F -->|Still unresolved after three days| K[Email reminder]
+    J -->|Eligible after seven days and reporter opted in| L[One Instagram post]
+```
+
+The Instagram path needs a distinct neighbor's **Still there** check after seven days. The authority link is private and never appears in the public post.
+
+## What works today
+
+| Step | Implementation |
+| --- | --- |
+| Capture | Mobile camera with live GPS, or up to four photos **or** one video of at most 15 seconds; previews let the reporter inspect evidence. |
+| Locate | Image EXIF or supported video GPS takes priority. If absent, the app uses permission-based phone GPS. Bengaluru coordinates are matched against the 369 GBA ward polygons. |
+| Review | A vision agent rejects unrelated or unclear images, then proposes category, title, details, and summary from visible evidence. The reporter reviews the result before creating the report. |
+| Limit abuse | Five submission attempts per signed-in user per India-local day, including failed creation attempts; at most one video report. Rejected images at the review step do not consume an attempt. |
+| Route | Configured ward email takes priority. An unconfigured ward is clearly marked and routed to the demo inbox. The email includes a small attached image or a time-limited evidence link, a directions link, and a private repair link. |
+| Close the loop | The repair link accepts one fix photo or video without an authority sign-in. A location check limits uploads to the report area; two distinct residents' fix checks mark it community verified. |
+| Follow up | A scheduled AWS job can resend an unresolved report after three days. After seven days, an opted-in report with a new neighbor check can make one Instagram post. |
+| Browse | Shared map and feed for Bengaluru and Delhi; foreground browser location can alert a signed-in passerby to nearby issues. |
+
+**Accuracy boundaries:** A ward polygon identifies a ward, not the exact civic department or its email. Delhi ward polygons and verified ward contacts are not yet included. Browser proximity alerts work while Civicloop is open; mobile browsers do not provide reliable background GPS. The app labels approximate pins, demo recipients, and AI drafts rather than presenting them as confirmed field facts.
+
+## Architecture
+
+The live frontend is served from **Vercel**. The report system is deployed in the project's assigned AWS Region, `ap-south-1`. AWS hosts the authenticated API, evidence, reports, secrets, scheduled follow-up, and email fallback. This satisfies the hackathon's deployed-on-AWS route; the demo video should show an actual AWS resource and a working report, not just this diagram.
+
+```mermaid
+flowchart TB
+    U[Mobile browser] --> V[Vercel static frontend]
+    V --> C[Amazon Cognito login]
+    V --> A[Amazon API Gateway HTTP API]
+    A --> L[AWS Lambda report workflow]
+    L <--> D[Amazon DynamoDB reports and checks]
+    L <--> S[Private Amazon S3 evidence]
+    L --> W[GBA ward polygon lookup]
+    L --> O[OpenAI image review and email draft]
+    L -.optional alternative.-> B[Amazon Bedrock]
+    L --> M[AWS Secrets Manager]
+    L --> G[Gmail API primary / Amazon SES fallback]
+    L --> I[Instagram publishing API]
+    T[Amazon EventBridge hourly schedule] --> L
+    L --> CW[Amazon CloudWatch logs]
+```
+
+Images and short video frames are reviewed by `gpt-4o-mini` when the OpenAI key is configured. Bedrock is an alternative when its model is enabled in the selected Region. The AI proposes text; server-side checks enforce evidence limits, ward lookup, ownership, quota, consent, and dispatch. Evidence stays in private S3; browser uploads and downloads use short-lived signed URLs. Secrets are held server-side in AWS Secrets Manager. Public report responses omit the reporter's Cognito ID and private S3 object key.
+
+The Instagram publisher includes the public report link, ward, issue hashtags, `@bbmp.swm`, and `@deobbmp` in caption **text**. Instagram Login publishing does not provide account tagging through this integration. A failed or uncertain publish is held for review instead of blindly retried.
+
+## Try it in three minutes
+
+1. Open the [live app](https://civicloop-coral.vercel.app/) on a phone or in a narrow browser window. Explore the map and feed, then sign in to create a report.
+2. Choose **Live camera** or **Add evidence**, allow location, and watch the image review fill the report draft. An unrelated image should be rejected before report creation.
+3. Review the category, ward, evidence, and recipient. Create the report and show its map pin and public detail link.
+4. Show the email's attached evidence and private repair link in the configured inbox. If a ward contact is not configured, explain that this is demo delivery.
+5. Show how a passerby marks **Still there** or **Fixed**, and how repair evidence remains subject to community verification.
+6. Show the API, Lambda, DynamoDB, and S3 resources in the AWS Management Console. If showing an Instagram post, disclose whether its location is exact or approximate.
+
+For the hackathon video, keep this walkthrough **under three minutes** and upload it to YouTube as public or unlisted. The [official rules](https://www.wemakedevs.org/aws/env/rules) require a public repository, the video, and a short writeup covering the problem, build, and AWS's role. Judges will see the submitted video rather than a live demo, so prioritize the working path over a feature list.
+
+Suggested edit: **0:00–0:20** show the roadside problem; **0:20–1:15** capture, GPS, AI review, and ward; **1:15–2:05** show the emailed evidence and repair link; **2:05–2:35** show neighbor verification and the report status; **2:35–2:55** show the AWS resources that made the flow work. Leave a few seconds for the project name and links. Use a real report but keep private repair tokens out of the recording.
+
+## Run locally
+
+Requirements: Node.js 22+, AWS CLI authenticated for the project's selected Region, and AWS SAM CLI for backend deployment. Local map and sample reports can run without cloud credentials.
 
 ```sh
 python3 -m http.server 8080
 ```
 
-Visit `http://localhost:8080`. With an empty `config.js`, the map and sample reports are available locally. AI report creation needs the deployed AWS backend and sign-in.
+Open `http://localhost:8080`. With an empty `config.js`, this is a **local demo**; authenticated report creation and AI review require the deployed backend.
 
-## Deploy to AWS
+## Configure and deploy
 
-The stack uses regional API Gateway, Lambda, Cognito, DynamoDB, S3, Bedrock, and SES resources, plus CloudFront for static hosting. All regional resources must use the Region assigned to your AWS project. Confirm it in **AWS Settings → View all projects → Overview → Additional Info → Region**. Check the selected Region in `~/.aws/config` if it is unclear.
+1. Copy `.env.example` to the ignored `.env`. Set `AWS_REGION` to the Region assigned to your AWS project; confirm it in **AWS Settings → View all projects → Overview → Additional Info → Region**. For this project, it is `ap-south-1`.
+2. Add `OPENAI_API_KEY` and `OPENAI_SECRET_ID=civicloop/openai` to use the budget image-review model. Deployment copies the key to AWS Secrets Manager. A direct `BEDROCK_MODEL_ID` in the same Region can be used instead; cross-Region inference is not part of this deployment.
+3. Configure `GMAIL_FROM_EMAIL`, Google OAuth client credentials, and `GMAIL_REFRESH_TOKEN` for Gmail API sending. `SES_FROM_EMAIL` is the verified SES fallback. Set `DEMO_INBOX_EMAIL` for a safe demo. Add only **verified** municipal contacts to `AUTHORITY_EMAILS_JSON`; the map cannot supply their email addresses. SES sandbox recipients must be verified until production sending is approved.
+4. Add Instagram professional-account credentials only if publishing is needed. The account needs `instagram_business_basic` and `instagram_business_content_publish` permissions. Keep the token in `.env`; deployment stores it in Secrets Manager.
+5. Deploy with `AWS_PROFILE=sai node scripts/deploy.mjs`, replacing `sai` if your profile differs. The script creates or updates the SAM stack and writes public API/Cognito identifiers to `config.js`. Commit and push `config.js` so Vercel receives the current endpoints.
 
-Before deployment, confirm the Free plan state and supported-service list for this AWS experience. API Gateway, Bedrock, CloudFront, Cognito, DynamoDB, SES, S3, and Lambda are listed for the Free Tier, but Bedrock cross-Region inference is not supported. Use a model available directly in your selected Region. Service use can consume credits; model inference and data transfer have usage costs. Review AWS Settings → Billing and the AWS Billing and Cost Management console before and after deploying.
+The frontend receives no AWS access keys or private mail, OpenAI, or Instagram credentials. Deploying cloud resources and model calls can consume credits. To publish one specifically opted-in report, first run `node scripts/post-latest-instagram.mjs --report REPORT_ID --preview`, then run it without `--preview`. The publisher records the returned media ID to prevent an automatic duplicate.
 
-Requirements: Node.js 22+, AWS CLI authenticated with your AWS profile/SSO, and AWS SAM CLI. No static AWS access keys belong in `.env`.
+## Submission notes
 
-1. Copy `.env.example` to `.env` and set `AWS_REGION` to your selected Region.
-2. Set `BEDROCK_MODEL_ID` to a direct model ID enabled for your project in that Region. If inference is unavailable, the app uses a clearly labeled factual template. Bedrock access is optional for deployment.
-   To use image review without Bedrock, set `OPENAI_API_KEY` locally and `OPENAI_SECRET_ID=civicloop/openai`, then redeploy. Deployment saves the key in AWS Secrets Manager; Lambda uses `gpt-4o-mini` for image review and email drafting. The key must stay out of GitHub and client-side files. OpenAI calls incur usage charges.
-3. Set `SES_FROM_EMAIL` to the verified `civicloop@yahoo.com` identity and `DEMO_INBOX_EMAIL` to the verified test recipient. The project currently uses the SES sandbox, so every recipient must also be verified in the selected Region. Configure `AUTHORITY_EMAILS_JSON` only with current, verified ward contacts. Bengaluru entries use GBA ward numbers, for example `{"Bengaluru":{"wards":{"25":{"department":"Bengaluru West City Corporation","email":"verified-contact@example.org"}}}}`. Until a ward email is configured, the app labels and uses the demo inbox; it does not infer an email address from the map.
-4. Run `node scripts/deploy.mjs`. If you use a named AWS profile, run `AWS_PROFILE=sai node scripts/deploy.mjs` (replace `sai` with your profile name). This creates or updates the AWS stack, writes the Cognito domain and public IDs to `.env` and `config.js`, and removes any Google identity provider from the Cognito user pool.
-5. Create/sign in to a Cognito user, then add trusted desk operators to the `WardDesk` group in the Cognito console. Only that group can see the live ward desk; reporters can send only their own reports after reviewing the recipient and email.
-6. To enable automatic Instagram follow-ups, use an Instagram Business or Creator account owned by Civicloop and a Meta app with Instagram Login permissions `instagram_business_basic` and `instagram_business_content_publish`. Add `INSTAGRAM_APP_ID`, `INSTAGRAM_USER_ID`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_TOKEN_EXPIRES_AT`, and `INSTAGRAM_SECRET_ID=civicloop/instagram` to the local `.env`, then redeploy. The deployment stores the token in AWS Secrets Manager in ap-south-1; the scheduled worker reads and refreshes it on the server. Instagram account setup and Meta's access approval must be completed before posts can publish. Only opted-in, unresolved reports with supported media enter the seven-day automated follow-up. Do not put the token in `config.js`, GitHub, or Vercel environment variables.
-   Captions include the public report link, ward, `@bbmp.swm`, `@deobbmp`, and issue hashtags. These are text mentions, since Instagram Login publishing does not support account tagging. The private authority fix link is sent only by email.
+- **Primary track:** Waste and Energy. Roadside dumping, plastic burning, and e-waste are the clearest examples; water leaks demonstrate that the same workflow can cover the Heat and Water track's issues.
+- **AWS contribution:** SAM deploys API Gateway, Lambda, Cognito, DynamoDB, private S3, EventBridge scheduling, CloudWatch logs, Secrets Manager access, and SES fallback. The frontend can be hosted elsewhere while the reporting workflow runs on AWS.
+- **Proven result:** The [Kodigehalli report](https://civicloop-coral.vercel.app/?report=bedda9e3-6c4b-4879-b98a-46659becc03d) passed image review, was stored with Ward 13, sent through Gmail to a demo inbox with a photo attachment, and produced [this Instagram post](https://www.instagram.com/p/DeUr0QgHZ5T/). The supplied image lacked GPS, so the pin is approximate. This demonstrates the workflow, not verified authority delivery or cleanup.
+- **Submission still needed:** Record and upload the under-three-minute YouTube demo; add its link and the short writeup to the hackathon submission form before its stated deadline. Student registration and AWS Builder Center verification are handled outside this repository.
+- **AI-assisted development disclosure:** Codex was used to help implement and document Civicloop. The application uses OpenAI for image review and email drafting when configured. Review and credit any additional tools used in the final submission.
 
-For a one-time Instagram post after deployment, run `node scripts/post-latest-instagram.mjs --report REPORT_ID --preview` to check the exact opted-in report, then omit `--preview` to publish it. A report must have Instagram consent and JPEG, PNG, or MP4 evidence. The command records the published media ID so the scheduled worker does not post it again. Omit `--report REPORT_ID` only when you intend to publish the newest eligible report.
+## Data and credits
 
-The frontend receives only the API URL, Cognito domain, and public app client ID. The Cognito app client has no client secret. Email addresses are deliberately left unverified, so Cognito email-based password recovery cannot be used until users verify their address. `.env` is ignored by Git.
+Bengaluru ward boundaries come from the Greater Bengaluru Authority data published through [OpenCity](https://data.opencity.in/dataset/gba-wards-delimitation-2025) under ODbL 1.0; see [`backend/data/README.md`](backend/data/README.md) for attribution and limits. The map uses OpenStreetMap data and tiles with attribution in the UI. This project has no affiliation with BBMP or any government body. Resident reports and AI descriptions are not independent findings; authority repair submissions still need neighbor verification.
 
-## Agent boundaries and follow-up
-
-The Vision Agent suggests issue fields from image evidence and sampled video frames; it cannot send email or change records. The Triage Agent drafts the authority email. The Follow-up Agent drafts a neutral update for person-led sharing. The Instagram worker uses a factual caption assembled from stored report data and can publish only when the reporter explicitly opted in and a neighbor later confirmed the issue remains. Instagram Login does not support account tagging; a verified authority handle configured as `socialHandle` is mentioned in the caption text only. Each initial email dispatch is recorded and blocked from duplicate sends; the scheduled three-day reminder is the only automatic email resend.
-
-SES accounts in the sandbox can send only to verified recipients, so a newly configured city contact will not receive mail until SES production sending is enabled. A demo inbox is explicitly labeled in the preview and in report status. Do not treat a demo delivery as a municipal notification. Evidence stays in private S3 storage; small JPEG/PNG/WebP photos are attached, while video and larger evidence use a 24-hour signed link.
-
-Two distinct signed-in neighbors confirming a fix move the report to **Community verified**. Each user can contribute one check per report. Public report responses omit the reporter's Cognito identifier and private S3 key. Signed-in users can view attached evidence using an expiring download link.
-
-## AWS resources
-
-`template.yaml` defines the deployable stack. `backend/handler.mjs` implements the API and bounded Bedrock agent tools. `backend/auth-triggers.mjs` confirms email/password sign-ups without verifying the submitted email. `scripts/deploy.mjs` is the deployment entry point; deploying creates or updates AWS resources and can incur usage charges.
-
-Nearby issue alerts use foreground browser location and notifications while Civicloop is open; mobile browsers do not reliably run GPS in the background. A failed or uncertain Instagram publish is marked for manual review rather than retried automatically, since a network timeout can occur after a post goes live. Bengaluru polygons are attributed to the Greater Bengaluru Authority and OpenCity/Oorvani Foundation; see `backend/data/README.md` for the ODbL source and limits. Delhi ward polygons and verified ward contacts are not included yet.
+Key implementation files: [`template.yaml`](template.yaml) (AWS infrastructure), [`backend/handler.mjs`](backend/handler.mjs) (report workflow), [`backend/ward-lookup.mjs`](backend/ward-lookup.mjs) (ward matching), [`app.js`](app.js) (mobile UI), and [`scripts/deploy.mjs`](scripts/deploy.mjs) (deployment).
