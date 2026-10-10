@@ -18,6 +18,7 @@ process.env.AWS_REGION = env.AWS_REGION;
 process.env.INSTAGRAM_SECRET_ID = env.INSTAGRAM_SECRET_ID;
 if (!env.AWS_REGION || !env.INSTAGRAM_SECRET_ID) throw new Error('Set AWS_REGION and INSTAGRAM_SECRET_ID in .env and deploy first.');
 const { publishInstagram, instagramCredentials } = await import('../backend/instagram.mjs');
+const { instagramCaption } = await import('../backend/handler.mjs');
 
 const region = env.AWS_REGION;
 const cloudformation = new CloudFormationClient({ region });
@@ -38,7 +39,8 @@ do {
 } while (ExclusiveStartKey);
 
 const supported = (report) => (report.evidenceFiles || []).find((file) => ['image/jpeg', 'image/png', 'video/mp4'].includes(file.contentType));
-const report = reports.filter(supported).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+const reportId = process.argv.includes('--report') ? process.argv[process.argv.indexOf('--report') + 1] : '';
+const report = reports.filter(supported).filter((item) => !reportId || item.id === reportId).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
 if (!report) throw new Error('No unresolved report has both Instagram opt-in and supported photo/video evidence. Create an opted-in report first.');
 const file = supported(report);
 const preview = { id: report.id, title: report.title, city: report.city, createdAt: report.createdAt, evidence: file.fileName };
@@ -46,7 +48,7 @@ if (process.argv.includes('--preview')) { console.log(JSON.stringify(preview, nu
 
 const credentials = await instagramCredentials();
 const mediaUrl = await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: file.key }), { expiresIn: 3600 });
-const caption = `Civicloop test post: ${String(report.title || 'Community report').slice(0, 100)}. A resident reported this issue near ${String(report.place || report.city).slice(0, 120)}, ${String(report.city).slice(0, 60)}. Report ${report.id}. This is a resident report awaiting independent verification.`.slice(0, 2200);
+const caption = instagramCaption(report);
 await db.send(new UpdateCommand({ TableName: table, Key: { pk: `REPORT#${report.id}`, sk: 'REPORT' }, UpdateExpression: 'SET instagramStatus = :publishing', ConditionExpression: 'allowInstagram = :yes AND attribute_not_exists(instagramStatus) AND (#status = :open OR #status = :progress)', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':publishing': 'publishing', ':yes': true, ':open': 'open', ':progress': 'progress' } }));
 console.log(`Publishing opted-in report ${report.id} to Instagram.`);
 let published;

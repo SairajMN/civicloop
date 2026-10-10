@@ -162,6 +162,18 @@ async function handleAuthorityConfirmationLink() {
   }
 }
 
+async function handlePublicReportLink() {
+  const id = new URLSearchParams(location.search).get('report');
+  if (!cloudMode || !id) return;
+  try {
+    const { report } = await api(`/reports/${encodeURIComponent(id)}`);
+    activeCity = report.city;
+    byId('city-select').value = activeCity;
+    await refreshReports();
+    openDetails(report.id);
+  } catch (error) { showToast(error.message || 'This report is unavailable.'); }
+}
+
 function openAuthorityProofForm(report, evidence = []) {
   const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${Number(report.lat)},${Number(report.lng)}`)}`;
   byId('authority-proof-content').innerHTML = `<div class="dialog-head"><div><span class="section-kicker">AUTHORITY FIX UPDATE</span><h2 class="dialog-section-title">${esc(report.title)}</h2><p class="dialog-section-copy">${esc(report.id)} · ${esc(report.wardName ? `Ward ${report.wardNumber} ${report.wardName}` : report.place || report.city)}</p></div><button class="icon-button close-authority-proof" type="button" aria-label="Close">×</button></div><p class="detail-description">${esc(report.details)}</p><p class="detail-location">⌖ ${Number(report.lat).toFixed(5)}, ${Number(report.lng).toFixed(5)} · <a href="${mapsUrl}" target="_blank" rel="noopener">Get directions to the report</a></p>${evidence.length ? `<p class="detail-location">Original evidence: ${evidence.map((file, index) => `<a href="${esc(file.url)}" target="_blank" rel="noopener">${esc(file.fileName || `File ${index + 1}`)}</a>`).join(' · ')} <small>Links expire in 5 minutes.</small></p>` : ''}<form id="authority-proof-form"><label class="field-label" for="authority-proof-file">One fix photo or video</label><input class="form-control" id="authority-proof-file" type="file" accept="image/jpeg,image/png,image/webp,image/heic,video/mp4,video/quicktime" required><p class="privacy-note">Photo: up to 10 MB. Video: up to 15 seconds and 25 MB. Enable location at the repair site, within 500 metres of the original report. Neighbors will verify the fix.</p><div class="dialog-actions"><button class="button button-quiet close-authority-proof" type="button">Cancel</button><button class="button button-primary" type="submit">Send fix for review <span aria-hidden="true">→</span></button></div></form>`;
@@ -564,7 +576,7 @@ async function createReport(event) {
     reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
     let note = 'Report created.';
     try {
-      const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true, demoOnly: true }) });
+      const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true }) });
       note = `Report emailed to ${sent.recipientLabel}.`;
     } catch (error) { note = `Report created, but email failed: ${error.message}`; }
     pendingDraftId = null;
@@ -859,4 +871,5 @@ window.CIVICLOOP_AUTH_READY?.then(async () => {
   if (cloudMode) { try { await refreshReports(); } catch (error) { showToast(error.message); } }
   if (localStorage.getItem(ALERTS_KEY) === 'on') startNearbyWatch();
   await handleAuthorityConfirmationLink();
+  await handlePublicReportLink();
 });

@@ -14,6 +14,10 @@ Parameters:
     Type: String
     Default: amazon.nova-lite-v1:0
     Description: Direct Amazon Bedrock vision model available in the selected Region.
+  OpenAiSecretId:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager secret containing the OpenAI vision API key.
   SesFromEmail:
     Type: String
     Default: ''
@@ -54,6 +58,8 @@ Globals:
         REPORTS_TABLE: !Ref ReportsTable
         EVIDENCE_BUCKET: !Ref EvidenceBucket
         BEDROCK_MODEL_ID: !Ref BedrockModelId
+        OPENAI_SECRET_ID: !Ref OpenAiSecretId
+        OPENAI_VISION_MODEL: gpt-4o-mini
         SES_FROM_EMAIL: !Ref SesFromEmail
         INSTAGRAM_SECRET_ID: !Ref InstagramSecretId
         YAHOO_SECRET_ID: !Ref YahooSecretId
@@ -67,6 +73,7 @@ Conditions:
   HasInstagramSecret: !Not [!Equals [!Ref InstagramSecretId, '']]
   HasYahooSecret: !Not [!Equals [!Ref YahooSecretId, '']]
   HasGmailSecret: !Not [!Equals [!Ref GmailSecretId, '']]
+  HasOpenAiSecret: !Not [!Equals [!Ref OpenAiSecretId, '']]
 
 Resources:
   UserPool:
@@ -279,6 +286,12 @@ Resources:
               - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
                 Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${GmailSecretId}-*'
+              - !Ref AWS::NoValue
+            - !If
+              - HasOpenAiSecret
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${OpenAiSecretId}-*'
               - !Ref AWS::NoValue
             - !If
               - HasSesSender

@@ -33,6 +33,18 @@ if (env.AWS_PROFILE) process.env.AWS_PROFILE = env.AWS_PROFILE;
 if (!region || region.includes('your-selected')) throw new Error('Set AWS_REGION to the selected Region shown in AWS Settings > View all projects > Overview > Additional Info > Region.');
 if (/^(global|us|eu|apac)\./.test(env.BEDROCK_MODEL_ID || '')) throw new Error('The AWS Free plan for this experience does not support cross-Region Bedrock inference; set a direct model ID available in the selected Region.');
 
+if (env.OPENAI_API_KEY) {
+  if (!env.OPENAI_SECRET_ID) throw new Error('Set OPENAI_SECRET_ID to store the OpenAI key in Secrets Manager.');
+  const client = new SecretsManagerClient({ region });
+  const secret = JSON.stringify({ apiKey: env.OPENAI_API_KEY });
+  try { await client.send(new CreateSecretCommand({ Name: env.OPENAI_SECRET_ID, SecretString: secret })); }
+  catch (error) {
+    if (error.name !== 'ResourceExistsException') throw error;
+    await client.send(new PutSecretValueCommand({ SecretId: env.OPENAI_SECRET_ID, SecretString: secret }));
+  }
+  console.log('Stored the OpenAI key in Secrets Manager in the selected Region.');
+}
+
 if (env.INSTAGRAM_ACCESS_TOKEN) {
   const required = ['INSTAGRAM_SECRET_ID', 'INSTAGRAM_APP_ID', 'INSTAGRAM_USER_ID'];
   if (required.some((key) => !env[key] || env[key].startsWith('your_'))) throw new Error(`Set ${required.join(', ')} before deploying Instagram publishing.`);
@@ -82,6 +94,7 @@ run('sam', ['build', '--template-file', 'template.yaml']);
 const params = [
   `SiteOrigin=${siteOrigin}`,
   env.BEDROCK_MODEL_ID && `BedrockModelId=${env.BEDROCK_MODEL_ID}`,
+  env.OPENAI_API_KEY && `OpenAiSecretId=${env.OPENAI_SECRET_ID}`,
   env.SES_FROM_EMAIL && `SesFromEmail=${env.SES_FROM_EMAIL}`,
   env.INSTAGRAM_SECRET_ID && `InstagramSecretId=${env.INSTAGRAM_SECRET_ID}`,
   env.YAHOO_SECRET_ID && `YahooSecretId=${env.YAHOO_SECRET_ID}`,
