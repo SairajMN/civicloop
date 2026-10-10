@@ -386,6 +386,14 @@ Resources:
             Method: POST
             Auth:
               Authorizer: CognitoAuthorizer
+        CancelReport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ReportsApi
+            Path: /reports/{id}/cancel
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
         AuthorityConfirmFix:
           Type: HttpApi
           Properties:

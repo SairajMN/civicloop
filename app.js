@@ -38,6 +38,10 @@ let markerLayer;
 let currentLocation = null;
 let selectedReportId = null;
 let photoPreviewUrls = [];
+let selectedEvidenceFiles = [];
+let previewIndex = 0;
+let cameraStream = null;
+const OWN_REPORTS_KEY = 'civicloop.own-reports';
 let pendingDraftId = null;
 let reportLocationReady = false;
 let reportPhase = 'capture';
@@ -60,7 +64,7 @@ const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': 
 const statusLabels = { open: 'Needs a check', progress: 'Sent to area desk', claimed: 'Fix reported · verify', verified: 'Community verified' };
 
 function updateCaptureReady() {
-  const hasEvidence = Boolean(byId('issue-photo').files.length);
+  const hasEvidence = Boolean(selectedEvidenceFiles.length);
   const ready = hasEvidence && reportLocationReady;
   byId('analyze-report-button').hidden = reportPhase !== 'capture' || !ready;
   byId('capture-hint').textContent = ready ? 'Evidence and location are ready. Civicloop can analyze the issue now.' : hasEvidence ? 'Now enable your location to continue.' : reportLocationReady ? 'Now add a photo or short video to continue.' : 'Add evidence and enable location to continue.';
@@ -133,7 +137,6 @@ function render() {
   byId('auth-button').textContent = window.CivicAuth?.token() ? 'Sign out' : 'Sign in';
   byId('auth-button').hidden = !cloudMode;
   byId('ward-button').hidden = cloudMode && !window.CivicAuth.isWard();
-  byId('share-authority').disabled = !cloudMode;
 }
 
 async function refreshReports() {
@@ -274,6 +277,8 @@ function openDetails(id) {
   const report = reports.find((item) => item.id === id);
   if (!report) return;
   selectedReportId = id;
+  let ownReport = false;
+  try { ownReport = JSON.parse(localStorage.getItem(OWN_REPORTS_KEY) || '[]').includes(id); } catch { /* Ownership is still enforced by the API. */ }
   const dialog = byId('detail-dialog');
   byId('detail-content').innerHTML = `
     <div class="detail-top"><div><span class="detail-category">${esc(report.category)}</span><h2 class="detail-title">${esc(report.title)}</h2><p class="detail-sub">${esc(report.place || report.city)} · ${esc(report.age || 'just now')} · ${esc(report.id)}</p></div><button class="icon-button close-detail" type="button" aria-label="Close">×</button></div>
@@ -286,8 +291,9 @@ function openDetails(id) {
     ${report.instagramStatus === 'published' ? `<p class="detail-location">Instagram follow-up published.${report.instagramPermalink?.startsWith('https://www.instagram.com/') ? ` <a href="${esc(report.instagramPermalink)}" target="_blank" rel="noopener">View post</a>` : ''}</p>` : report.allowInstagram && !report.instagramStatus ? `<p class="detail-location">Public Instagram follow-up is scheduled only if this remains unresolved after 7 days and a neighbor confirms it. <button class="text-button" type="button" data-instagram-opt-out="${esc(report.id)}">Cancel public follow-up</button></p>` : ''}
     <div class="detail-counts"><span><strong>${Number(report.checks) || 0}</strong> community checks</span><span><strong>${Number(report.fixChecks) || 0}</strong> fix confirmations</span></div>
     <div class="checkin-box"><strong>Passing by? Add a quick check</strong><p>Your check updates this report; it won't create a duplicate ticket.</p><div class="checkin-actions"><button class="button button-outline" type="button" data-check="still">Still there</button><button class="button button-outline" type="button" data-check="fixed">Looks fixed</button><button class="button button-quiet" type="button" data-check="unsure">Can't verify</button></div></div>
-    <div class="detail-actions"><button class="button button-quiet share-trigger" type="button">Share update</button><button class="button button-primary" type="button" data-close-detail>Done</button></div>`;
+    <div class="detail-actions"><button class="button button-quiet share-trigger" type="button">Share update</button>${ownReport ? `<button class="button button-quiet" type="button" data-cancel-report="${esc(id)}">Cancel report</button>` : ''}<button class="button button-primary" type="button" data-close-detail>Done</button></div>`;
   if (!dialog.open) dialog.showModal();
+  if (cloudMode && report.photoName) byId('detail-content').querySelector('[data-evidence]')?.click();
 }
 
 async function applyCheck(kind) {
@@ -348,6 +354,11 @@ function updateLocationLabel() {
   if (!currentLocation) return;
   byId('location-label').textContent = 'Location added';
   byId('location-coords').textContent = `${currentLocation.lat.toFixed(4)}, ${currentLocation.lng.toFixed(4)}`;
+}
+
+function cityForPoint(lat, lng) {
+  const nearest = Object.entries(CITIES).filter(([city]) => city !== 'Other').sort((a, b) => distanceKm(lat, lng, ...a[1].center) - distanceKm(lat, lng, ...b[1].center))[0];
+  return nearest && distanceKm(lat, lng, ...nearest[1].center) < 60 ? nearest[0] : 'Other';
 }
 
 function distanceKm(lat1, lon1, lat2, lon2) {
@@ -447,7 +458,7 @@ async function videoPreviewFrames(file) {
 function showReportReview(inspected, version) {
   const { draft, location: place } = inspected;
   const instagramReady = Boolean(window.CIVICLOOP_CONFIG?.instagramEnabled);
-  const supportedEvidence = Array.from(byId('issue-photo').files).some((file) => ['image/jpeg', 'image/png', 'video/mp4'].includes(file.type));
+  const supportedEvidence = selectedEvidenceFiles.some((file) => ['image/jpeg', 'image/png', 'video/mp4'].includes(file.type));
   byId('allow-instagram').disabled = !instagramReady || !supportedEvidence;
   byId('instagram-help').textContent = !instagramReady ? 'Instagram publishing will be available after Civicloop connects its professional account.' : !supportedEvidence ? 'Automatic posting requires a JPEG/PNG photo or MP4 video.' : 'If this issue remains unresolved after 7 days and someone confirms it is still there, Civicloop may automatically post one photo or video and a factual caption to its professional Instagram account. Anyone may see and reshare it. Only choose this if the evidence contains no faces, license plates, or private details.';
   byId('issue-category').value = draft.category;
@@ -470,6 +481,8 @@ function showReportReview(inspected, version) {
     ['Report summary', draft.summary],
   ];
   byId('draft-fields').innerHTML = fields.map(([label, value], index) => `<div class="draft-field" style="--field-order:${index}"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
+  byId('review-evidence').innerHTML = `<strong>${selectedEvidenceFiles.length} evidence file${selectedEvidenceFiles.length === 1 ? '' : 's'} ready</strong><div>${selectedEvidenceFiles.map((file, index) => `<button class="text-button" type="button" data-preview-index="${index}">View ${index + 1}</button>`).join(' ')}</div><div id="review-media"></div>`;
+  showReviewMedia();
   byId('vision-note').textContent = draft.visualDraftBy === 'bedrock' ? 'The vision agent filled these details from your evidence. Check them before creating.' : 'Vision analysis was unavailable. This cautious draft asks for an inspection; use different evidence if it misses the issue.';
   setReportPhase('review');
   clearTimeout(reviewRevealTimer);
@@ -479,7 +492,7 @@ function showReportReview(inspected, version) {
 }
 
 async function analyzeReport() {
-  const files = Array.from(byId('issue-photo').files || []);
+  const files = [...selectedEvidenceFiles];
   const videos = files.filter((file) => file.type.startsWith('video/'));
   const images = files.filter((file) => file.type.startsWith('image/'));
   if (!files.length || !reportLocationReady || !currentLocation) { showToast('Add evidence and enable your location first.'); return; }
@@ -545,24 +558,13 @@ async function createReport(event) {
     if (!category || !title || !details) throw new Error('The AI draft is incomplete. Use different evidence and try again.');
     const result = await api('/reports', { method: 'POST', body: JSON.stringify({ draftId: pendingDraftId, category, title, details, summary: byId('issue-summary').value.trim(), allowInstagram: byId('allow-instagram').checked }) });
     const report = result.report;
+    try { localStorage.setItem(OWN_REPORTS_KEY, JSON.stringify([...new Set([...JSON.parse(localStorage.getItem(OWN_REPORTS_KEY) || '[]'), report.id])])); } catch { /* The server still checks ownership. */ }
     reports.unshift({ ...report, age: 'just now', ageHours: 0, icon: iconForCategory(report.category) });
-    let note = '';
-    if (byId('share-authority').checked) {
-      try {
-        const route = await api(`/authority?city=${encodeURIComponent(report.city)}&place=${encodeURIComponent(report.place || '')}&wardNumber=${encodeURIComponent(report.wardNumber || '')}&corporation=${encodeURIComponent(report.corporation || '')}`);
-        if (!route.canSend) note = 'Report saved to the community feed; no authority or demo email recipient is configured.';
-        else {
-          const draftSource = report.emailDraftBy === 'bedrock' ? 'Drafted by the Bedrock agent' : 'Template email draft';
-          const ward = report.wardNumber ? `Ward ${report.wardNumber} · ${report.wardName} · ${report.corporation}` : report.city;
-          const evidencePlan = report.photoName ? `Evidence: ${report.photoName}` : 'No evidence file attached.';
-          const confirmed = window.confirm(`Send to: ${route.recipientLabel}\n\nSubject: ${report.emailSubject}\n${draftSource}\n\n${report.emailBody}\n\n${ward}\nCoordinates: ${report.lat}, ${report.lng}\n${evidencePlan}\n\nThe authority link requires a fix photo and GPS. Neighbors still verify the repair. Continue?`);
-          if (confirmed) {
-            const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true }) });
-            note = `Report emailed to ${sent.recipientLabel}${sent.attachmentCount ? ` with ${sent.attachmentCount} photo(s) attached` : ''}.`;
-          } else note = 'Report saved to the community feed; email not sent.';
-        }
-      } catch (error) { note = `Report saved, but the authority email was not sent: ${error.message}`; }
-    }
+    let note = 'Report created.';
+    try {
+      const sent = await api(`/reports/${encodeURIComponent(report.id)}/dispatch`, { method: 'POST', body: JSON.stringify({ confirmed: true, demoOnly: true }) });
+      note = `Report emailed to ${sent.recipientLabel}.`;
+    } catch (error) { note = `Report created, but email failed: ${error.message}`; }
     pendingDraftId = null;
     try { await refreshReports(); } catch { render(); note ||= 'Report saved. Refresh to load the latest shared neighborhood feed.'; }
     byId('report-dialog').close(); byId('report-form').reset(); resetPhotoPreview();
@@ -641,6 +643,8 @@ async function showShareDialog() {
 function resetPhotoPreview() {
   photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   photoPreviewUrls = [];
+  selectedEvidenceFiles = [];
+  previewIndex = 0;
   byId('photo-preview').replaceChildren();
   byId('photo-preview').hidden = true;
   byId('photo-name').textContent = 'Up to 4 photos or 1 video · max 15 sec';
@@ -650,30 +654,100 @@ function resetPhotoPreview() {
 }
 
 function handlePhoto() {
-  const files = Array.from(byId('issue-photo').files || []);
-  resetPhotoPreview();
+  addEvidence(Array.from(byId('issue-photo').files || []));
+  byId('issue-photo').value = '';
+}
+
+function addEvidence(newFiles) {
+  const files = [...selectedEvidenceFiles, ...newFiles];
   const videos = files.filter((file) => file.type.startsWith('video/'));
   const images = files.filter((file) => file.type.startsWith('image/'));
   if (files.length > 5 || videos.length > 1 || images.length > 4 || (videos.length && images.length) || files.some((file) => file.size > 25 * 1024 * 1024)) {
-    byId('issue-photo').value = '';
     showToast('Choose up to four photos or one video, each under 25 MB.');
-    updateCaptureReady();
     return;
   }
+  photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  photoPreviewUrls = [];
+  selectedEvidenceFiles = files;
+  previewIndex = Math.max(0, files.length - 1);
   if (!files.length) { updateCaptureReady(); return; }
   byId('photo-name').textContent = `${files.length} file${files.length === 1 ? '' : 's'} selected · up to 4 photos or 1 video`;
-  const previews = files.map((file) => {
-    const url = URL.createObjectURL(file);
-    photoPreviewUrls.push(url);
-    const preview = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
-    preview.src = url;
-    if (preview.tagName === 'VIDEO') { preview.controls = true; preview.muted = true; }
-    preview.alt = file.type.startsWith('video/') ? '' : 'Selected evidence preview';
-    return preview;
-  });
-  byId('photo-preview').replaceChildren(...previews);
-  byId('photo-preview').hidden = false;
+  photoPreviewUrls = files.map((file) => URL.createObjectURL(file));
+  renderEvidencePreview();
   updateCaptureReady();
+}
+
+function renderEvidencePreview() {
+  const file = selectedEvidenceFiles[previewIndex];
+  if (!file) return;
+  const media = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
+  media.src = photoPreviewUrls[previewIndex];
+  if (media.tagName === 'VIDEO') { media.controls = true; media.muted = true; }
+  else media.alt = `Evidence photo ${previewIndex + 1}`;
+  const controls = document.createElement('div');
+  controls.className = 'evidence-nav';
+  controls.innerHTML = `<button type="button" data-preview-step="-1" aria-label="Previous evidence">←</button><span>${previewIndex + 1} of ${selectedEvidenceFiles.length}</span><button type="button" data-preview-step="1" aria-label="Next evidence">→</button>`;
+  byId('photo-preview').replaceChildren(media, controls);
+  byId('photo-preview').hidden = false;
+}
+
+function showReviewMedia() {
+  const target = byId('review-media');
+  if (!target || !photoPreviewUrls[previewIndex]) return;
+  target.innerHTML = selectedEvidenceFiles[previewIndex].type.startsWith('video/') ? `<video controls muted src="${esc(photoPreviewUrls[previewIndex])}"></video>` : `<img src="${esc(photoPreviewUrls[previewIndex])}" alt="Evidence photo ${previewIndex + 1}">`;
+}
+
+function renderDetailGallery(list) {
+  const file = list.galleryFiles[list.galleryIndex];
+  list.querySelector('.gallery-count').textContent = `${list.galleryIndex + 1} of ${list.galleryFiles.length}`;
+  list.querySelector('.detail-gallery-media').innerHTML = `${file.contentType?.startsWith('video/') ? `<video controls src="${esc(file.url)}"></video>` : `<img src="${esc(file.url)}" alt="Report evidence ${list.galleryIndex + 1}">`}<a href="${esc(file.url)}" target="_blank" rel="noopener">Open ${esc(file.fileName || 'evidence')}</a>`;
+}
+
+function stopCamera() {
+  cameraStream?.getTracks().forEach((track) => track.stop());
+  cameraStream = null;
+  byId('camera-video').srcObject = null;
+  byId('camera-panel').hidden = true;
+}
+
+async function openCamera() {
+  try {
+    const point = await getLivePoint();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' } } });
+    stopCamera();
+    cameraStream = stream;
+    currentLocation = { ...point, city: cityForPoint(point.lat, point.lng) };
+    reportLocationReady = true;
+    updateLocationLabel();
+    byId('camera-video').srcObject = stream;
+    byId('camera-coords').textContent = `Live GPS · ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
+    byId('camera-panel').hidden = false;
+    updateCaptureReady();
+  } catch (error) { stopCamera(); showToast(error.message || 'Allow camera and location access to capture a geotagged photo.'); }
+}
+
+async function captureCamera() {
+  const video = byId('camera-video');
+  if (!cameraStream || !video.videoWidth) { showToast('Camera is still starting. Try again.'); return; }
+  try {
+    const point = await getLivePoint();
+    currentLocation = { ...point, city: cityForPoint(point.lat, point.lng) };
+    reportLocationReady = true;
+    updateLocationLabel();
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const context = canvas.getContext('2d');
+    context.drawImage(video, 0, 0);
+    const tag = `${new Date().toISOString()} · GPS ${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
+    context.font = `${Math.max(16, Math.floor(canvas.width / 45))}px sans-serif`;
+    const width = context.measureText(tag).width + 24;
+    context.fillStyle = 'rgba(0,0,0,.7)'; context.fillRect(0, canvas.height - 48, width, 48);
+    context.fillStyle = '#fff'; context.fillText(tag, 12, canvas.height - 16);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+    if (!blob) throw new Error('Could not capture the photo.');
+    addEvidence([new File([blob], `civicloop-${Date.now()}.jpg`, { type: 'image/jpeg' })]);
+    stopCamera();
+  } catch (error) { showToast(error.message || 'Could not capture the photo.'); }
 }
 
 async function toggleNearbyAlerts() {
@@ -704,6 +778,7 @@ async function shareUpdate() {
 
 function openReportDialog() {
   reportVersion++;
+  stopCamera();
   byId('report-form').reset();
   resetPhotoPreview();
   reportLocationReady = false;
@@ -716,12 +791,17 @@ function openReportDialog() {
 
 document.querySelectorAll('[data-open-report]').forEach((button) => button.addEventListener('click', openReportDialog));
 document.querySelectorAll('.close-dialog').forEach((button) => button.addEventListener('click', () => byId('report-dialog').close()));
-byId('report-dialog').addEventListener('close', () => { reportVersion++; clearTimeout(reviewRevealTimer); });
+byId('report-dialog').addEventListener('close', () => { reportVersion++; clearTimeout(reviewRevealTimer); stopCamera(); });
 byId('report-form').addEventListener('submit', createReport);
 byId('auth-button').addEventListener('click', () => window.CivicAuth.token() ? window.CivicAuth.signOut() : window.CivicAuth.signIn());
 byId('analyze-report-button').addEventListener('click', analyzeReport);
 byId('restart-report').addEventListener('click', openReportDialog);
 byId('issue-photo').addEventListener('change', handlePhoto);
+byId('open-camera-button').addEventListener('click', openCamera);
+byId('close-camera-button').addEventListener('click', stopCamera);
+byId('capture-camera-button').addEventListener('click', captureCamera);
+byId('photo-preview').addEventListener('click', (event) => { const step = event.target.closest('[data-preview-step]'); if (step) { previewIndex = (previewIndex + Number(step.dataset.previewStep) + selectedEvidenceFiles.length) % selectedEvidenceFiles.length; renderEvidencePreview(); } });
+byId('review-evidence').addEventListener('click', (event) => { const button = event.target.closest('[data-preview-index]'); if (button) { previewIndex = Number(button.dataset.previewIndex); showReviewMedia(); } });
 byId('form-location-button').addEventListener('click', () => locateUser({ forReport: true }));
 byId('locate-button').addEventListener('click', () => locateUser());
 byId('bottom-check-button').addEventListener('click', () => locateUser({ notify: true }));
@@ -738,8 +818,12 @@ byId('ward-dialog').addEventListener('click', (event) => {
   const dispatch = event.target.closest('[data-dispatch]'); if (dispatch) dispatchAuthorityEmail(dispatch.dataset.dispatch);
 });
 byId('detail-dialog').addEventListener('click', (event) => {
+  const galleryStep = event.target.closest('[data-gallery-step]'); if (galleryStep) { const list = galleryStep.closest('[data-evidence-links]'); list.galleryIndex = (list.galleryIndex + Number(galleryStep.dataset.galleryStep) + list.galleryFiles.length) % list.galleryFiles.length; renderDetailGallery(list); }
   if (event.target.closest('.close-detail, [data-close-detail]')) byId('detail-dialog').close();
   const check = event.target.closest('[data-check]'); if (check) applyCheck(check.dataset.check);
+  const cancel = event.target.closest('[data-cancel-report]'); if (cancel && window.confirm('Cancel this report? It will be removed from the community feed. An email already sent cannot be recalled.')) {
+    api(`/reports/${encodeURIComponent(cancel.dataset.cancelReport)}/cancel`, { method: 'POST' }).then(async () => { byId('detail-dialog').close(); await refreshReports(); showToast('Report cancelled.'); }).catch((error) => showToast(error.message));
+  }
   if (event.target.closest('.share-trigger')) showShareDialog();
   const optOut = event.target.closest('[data-instagram-opt-out]'); if (optOut) {
     if (!requireSignIn()) return;
@@ -747,7 +831,7 @@ byId('detail-dialog').addEventListener('click', (event) => {
   }
   const evidence = event.target.closest('[data-evidence]'); if (evidence) api(`/reports/${encodeURIComponent(evidence.dataset.evidence)}/evidence`).then(({ files }) => {
     const list = byId('detail-content').querySelector(`[data-evidence-links="${CSS.escape(evidence.dataset.evidence)}"]`);
-    if (list) list.innerHTML = files.map((file, index) => `<a href="${esc(file.url)}" target="_blank" rel="noopener">Open ${esc(file.fileName || `evidence ${index + 1}`)}</a>`).join(' · ');
+    if (list) { list.innerHTML = `<div class="detail-gallery"><div class="detail-gallery-media"></div><div class="evidence-nav"><button type="button" data-gallery-step="-1">←</button><span class="gallery-count"></span><button type="button" data-gallery-step="1">→</button></div></div>`; list.galleryFiles = files; list.galleryIndex = 0; renderDetailGallery(list); }
   }).catch((error) => showToast(error.message));
   const fixEvidence = event.target.closest('[data-fix-evidence]'); if (fixEvidence) api(`/reports/${encodeURIComponent(fixEvidence.dataset.fixEvidence)}/fix-evidence`).then(({ url }) => {
     const list = byId('detail-content').querySelector(`[data-fix-evidence-link="${CSS.escape(fixEvidence.dataset.fixEvidence)}"]`);

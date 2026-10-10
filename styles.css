@@ -1034,7 +1034,7 @@ h1 em {
   cursor:pointer
 }
 .report-dialog [hidden] { display:none!important }
-.report-dialog .upload-location-row { gap:12px; margin-top:22px }
+.report-dialog .upload-location-row { gap:12px; margin-top:22px; grid-template-columns:repeat(3,minmax(0,1fr)) }
 .report-dialog .upload-box,.report-dialog .location-box {
   min-height:92px;
   padding:16px;
@@ -1299,6 +1299,19 @@ h1 em {
 .photo-preview[hidden] {
   display:none
 }
+.evidence-nav { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; font-size:12px; color:#526258; background:#fff }
+.evidence-nav button { border:1px solid #dce4dc; border-radius:8px; background:#fff; color:#335a40; padding:5px 12px; cursor:pointer }
+.camera-panel { margin-top:14px; border:1px solid #dce4dc; border-radius:12px; padding:10px; background:#f6f8f5 }
+.camera-panel[hidden] { display:none }
+.camera-panel video { display:block; width:100%; max-height:320px; object-fit:contain; background:#111; border-radius:8px }
+.camera-panel p { font-size:11px; color:#53665a }
+.camera-actions { display:flex; gap:8px; flex-wrap:wrap }
+.review-evidence { margin:12px 0; font-size:12px; color:#526258 }
+.review-evidence .text-button { margin:6px }
+.review-evidence img,.review-evidence video,.detail-gallery img,.detail-gallery video { display:block; max-width:100%; max-height:240px; margin:8px auto; object-fit:contain }
+.detail-gallery { border:1px solid #e5ebe5; border-radius:8px; margin-top:10px; overflow:hidden }
+.detail-gallery-media { padding:8px; text-align:center }
+@media(max-width:760px) { .report-dialog .upload-location-row { grid-template-columns:1fr } }
 
 @media(max-width:1050px) {
   .topbar {
